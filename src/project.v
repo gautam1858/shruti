@@ -119,7 +119,7 @@ module tt_um_gautam1858_shruti (
   // ------------------------------------------------------------------ Event Machines
   reg  [1:0]  run;
   reg  [3:0]  sync;
-  wire [4:0]  pc0, pc1;
+  wire [4:0]  pc0, pc1, as0, aj0, as1, aj1;
   wire [3:0]  sync_a, sync_b;
   wire [7:0]  en0, lvl0, od0, en1, lvl1, od1;
   wire [7:0]  rxh0, rxh1;
@@ -134,7 +134,8 @@ module tt_um_gautam1858_shruti (
 
   shruti_em u_em0 (
       .clk(clk), .rst_n(rst_n), .run(run[0]), .cnt(cnt), .cnt_p1(cnt_p1),
-      .vis(filt_d), .vis_prev(filt_q), .instr(mem0[pc0]), .pc(pc0),
+      .vis(filt_d), .vis_prev(filt_q), .pc(pc0),
+      .a_seq(as0), .a_jmp(aj0), .d_seq(mem0[as0]), .d_jmp(mem0[aj0]),
       .sync_in(sync), .sync_out(sync_a),
       .drv_en(en0), .drv_lvl(lvl0), .drv_od(od0),
       .hdata(spi_wdata),
@@ -148,13 +149,14 @@ module tt_um_gautam1858_shruti (
 `ifdef SHRUTI_SINGLE_EM
   assign sync_b = sync_a;
   assign en1 = 8'd0; assign lvl1 = 8'd0; assign od1 = 8'd0;
-  assign pc1 = 5'd0; assign rxh1 = 8'd0; assign txc1 = 3'd0; assign rxc1 = 3'd0;
+  assign pc1 = 5'd0; assign as1 = 5'd0; assign aj1 = 5'd0; assign rxh1 = 8'd0; assign txc1 = 3'd0; assign rxc1 = 3'd0;
   assign halt1 = 1'b0; assign fl1 = 4'd0; assign P1 = 16'd0; assign X1 = 16'd0;
   assign Y1 = 16'd0; assign co1 = 6'd0; assign ci1 = 6'd0;
 `else
   shruti_em u_em1 (
       .clk(clk), .rst_n(rst_n), .run(run[1]), .cnt(cnt), .cnt_p1(cnt_p1),
-      .vis(filt_d), .vis_prev(filt_q), .instr(mem1[pc1]), .pc(pc1),
+      .vis(filt_d), .vis_prev(filt_q), .pc(pc1),
+      .a_seq(as1), .a_jmp(aj1), .d_seq(mem1[as1]), .d_jmp(mem1[aj1]),
       .sync_in(sync_a), .sync_out(sync_b),
       .drv_en(en1), .drv_lvl(lvl1), .drv_od(od1),
       .hdata(spi_wdata),

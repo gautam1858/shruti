@@ -18,6 +18,14 @@
  * While run = 0 the EM sits in its reset state (isa.yaml): PC 0, T tracking the counter,
  * X = Y = 0, flags clear, OSR empty, ISR empty, pins push-pull, slots free. P, the CFG
  * fields and both FIFOs keep their contents so the host can set them up before starting.
+ *
+ * Timing structure (none of it visible at the ISA level):
+ * - The instruction is held in a register. Program memory is read in parallel at pc + 1
+ *   and at the current instruction's jump target, and the register loads whichever the
+ *   execute stage picks, so the 32:1 memory read is not in series with execution. A
+ *   program word rewritten while its EM runs takes effect the next time it is fetched.
+ * - dT = T - counter is kept in a register and stepped every cycle, so time comparisons
+ *   need one adder after a flop instead of two in series.
  */
 
 `default_nettype none
@@ -31,7 +39,10 @@ module shruti_em (
     input  wire [11:0] vis,            // filtered pin levels this cycle
     input  wire [11:0] vis_prev,       // filtered pin levels last cycle
 
-    input  wire [15:0] instr,          // program word at pc
+    output wire [4:0]  a_seq,          // program memory read addresses: pc + 1,
+    output wire [4:0]  a_jmp,          //   and the jump target (0 while stopped)
+    input  wire [15:0] d_seq,          // the words at those addresses
+    input  wire [15:0] d_jmp,
     output reg  [4:0]  pc,
 
     input  wire [3:0]  sync_in,        // SYNC flags as this EM sees them
@@ -63,7 +74,9 @@ module shruti_em (
 );
 
   // ---------------------------------------------------------------- state
+  reg [15:0] instr;                    // the word at pc
   reg [23:0] T;
+  reg [23:0] dT;                       // T - counter
   reg        tp;                       // T_PASSED
   reg [15:0] osr, isr;
   reg [4:0]  osr_cnt, isr_cnt;
@@ -84,6 +97,8 @@ module shruti_em (
   reg [1:0]  tx_rd, rx_rd;
 
   assign flags   = {f_unf, f_ovf, f_late, f_to};
+  assign a_seq   = pc + 5'd1;
+  assign a_jmp   = run ? instr[4:0] : 5'd0;
   assign cfg_out = {autopull, out_msb, out_n};
   assign cfg_in  = {autopush, in_msb, in_n};
 
@@ -115,9 +130,9 @@ module shruti_em (
   wire [1:0]  y_flag = instr[1:0];
 
   // ---------------------------------------------------------------- time arithmetic
-  // diffT = T - cnt. While T_PASSED is clear, T is in the future, so diffT is in [1, 2^23).
-  wire [23:0] diffT  = T - cnt;
-  wire        tp_eff = tp | (diffT == 24'd0);
+  // dT = T - cnt. While T_PASSED is clear, T is in the future, so dT is in [1, 2^23).
+  wire        tp_eff = tp | (dT == 24'd0);
+  wire [23:0] dT_m1  = dT - 24'd1;
 
   wire [15:0] p_shr  = P >> a_shift;
   reg  [23:0] addend;
@@ -130,7 +145,9 @@ module shruti_em (
     endcase
   end
   wire [23:0] tgt     = T + addend;          // T + d, T + 2^n or T + delta
-  wire [23:0] dtgt    = diffT + addend;      // tgt - cnt
+  wire [23:0] dtgt    = dT + addend;         // tgt - cnt
+  wire [23:0] dtgt_m1 = dT_m1 + addend;      // tgt - (cnt + 1), dT after T := tgt
+  wire [23:0] dadd_m1 = addend - 24'd1;      // dT after T := cnt + addend
   wire        eq_tgt  = (dtgt == 24'd0);
   wire        fut_tgt = !eq_tgt && !dtgt[23];
   wire [23:0] cnt_add = cnt + addend;        // ADDT now candidate
@@ -169,7 +186,7 @@ module shruti_em (
   reg        done, jump, halt_now;
   reg [4:0]  jtarget;
   reg        t_we;
-  reg [23:0] t_val;
+  reg [23:0] t_val, d_val;
   reg        tp_val;
   reg        pull_now, push_now;
   reg [15:0] push_word;
@@ -198,7 +215,7 @@ module shruti_em (
 
   always @* begin
     done = 1'b0; jump = 1'b0; halt_now = 1'b0; jtarget = j_tgt;
-    t_we = 1'b0; t_val = T; tp_val = 1'b1;
+    t_we = 1'b0; t_val = T; d_val = dT_m1; tp_val = 1'b1;
     pull_now = 1'b0; push_now = 1'b0; push_word = isr;
     arm = 1'b0; arm_now = 1'b0; arm_pin = pin4[2:0]; arm_lvl = 1'b0;
     set_now = 1'b0; set_pin = s_pin[2:0]; set_lvl = s_lvl;
@@ -230,12 +247,12 @@ module shruti_em (
             endcase
             to_now = (w_tmo != 5'd0) && (blk ? eq_tgt : !fut_tgt);
             if (match) begin
-              t_we = 1'b1; t_val = cnt; tp_val = 1'b1;
+              t_we = 1'b1; t_val = cnt; d_val = 24'hFFFFFF; tp_val = 1'b1;
               n_snap = vis;
               done = 1'b1;
             end else if (to_now) begin
               n_to = 1'b1;
-              t_we = 1'b1; t_val = tgt; tp_val = 1'b1;
+              t_we = 1'b1; t_val = tgt; d_val = dtgt_m1; tp_val = 1'b1;
               done = 1'b1;
             end
           end
@@ -326,13 +343,13 @@ module shruti_em (
         4'd4, 4'd5: begin
           t_we = 1'b1;
           if (!a_now) begin
-            t_val = tgt; tp_val = !fut_tgt;
+            t_val = tgt; d_val = dtgt_m1; tp_val = !fut_tgt;
           end else if (tp_eff) begin
-            t_val = cnt_add; tp_val = (addend == 24'd0);
-          end else if (diffT >= addend) begin
-            t_val = T; tp_val = 1'b0;               // T is already later than now + delta
+            t_val = cnt_add; d_val = dadd_m1; tp_val = (addend == 24'd0);
+          end else if (dT >= addend) begin
+            t_val = T; d_val = dT_m1; tp_val = 1'b0;   // T is already later than now + delta
           end else begin
-            t_val = cnt_add; tp_val = 1'b0;
+            t_val = cnt_add; d_val = dadd_m1; tp_val = 1'b0;
           end
           done = 1'b1;
         end
@@ -524,7 +541,9 @@ module shruti_em (
   always @(posedge clk) begin
     if (!rst_n || !run) begin
       pc <= 5'd0;
+      instr <= d_jmp;              // the word at 0
       T <= cnt_p1;                 // so T == counter in the first cycle of a run
+      dT <= 24'd0;
       tp <= 1'b1;
       X <= 16'd0; Y <= 16'd0;
       osr <= 16'd0; osr_cnt <= {1'b0, out_n} + 5'd1;
@@ -544,6 +563,7 @@ module shruti_em (
       end else begin
         tp <= tp_eff;
       end
+      dT <= d_val;
       X <= n_X; Y <= n_Y;
       osr <= n_osr; osr_cnt <= n_osr_cnt;
       isr <= n_isr; isr_cnt <= n_isr_cnt;
@@ -556,6 +576,7 @@ module shruti_em (
       if (halt_now) halted <= 1'b1;
       if (done) begin
         pc <= jump ? jtarget : pc + 5'd1;
+        instr <= jump ? d_jmp : d_seq;
         blk <= 1'b0;
         sampled <= 1'b0;
       end else if (!halted && !halt_now) begin
