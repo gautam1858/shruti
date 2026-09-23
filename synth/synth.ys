@@ -1,0 +1,8 @@
+# Used by synth.sh (run from the repo root), which fills in @LIB@ and @OUT@.
+read_verilog -sv src/project.v src/shruti_em.v src/shruti_spi.v
+synth -top tt_um_gautam1858_shruti -flatten
+dfflibmap -liberty @LIB@
+abc -liberty @LIB@
+opt_clean
+stat -liberty @LIB@
+write_verilog -noattr @OUT@/netlist.v

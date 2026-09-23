@@ -27,3 +27,7 @@ _opam/
 # Editors and OS
 *.swp
 .vscode/*.log
+
+# Synthesis output (synth/synth.sh)
+synth/out/
+test/pytest-results.xml
