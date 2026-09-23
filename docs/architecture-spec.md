@@ -78,7 +78,7 @@ Per-EM state: PC (5 bits), T (24 bits) with a T_PASSED bit, X and Y counters (16
 
 Timing model: one cycle per instruction unless it blocks; all time comparisons are modulo 2^24, and a time t is in the future iff (t - counter) mod 2^24 is in [1, 2^23). An OUT@ whose target is not in the future, or an IN@ whose target has passed, still executes but sets the sticky LATE flag; LATE is visible to JMP and to the host, and every firmware contract requires that it is never set. A bit period is one "ADDT P" step up to 65,535 cycles (763 baud at 50 MHz); slower rates load P with 1/k of the period and take k steps per bit (300 baud: P = 55,556, three steps).
 
-UART transmit at bit period B (host sets P = B, TX pin push-pull) is twelve words. Traced by hand; ISS-verified in Phase 3.
+UART transmit at bit period B (host sets P = B, TX pin push-pull) is twelve words. ISS-verified: the pin trace is cycle-exact for 256 random (byte, B) pairs with B from 8 to 65,535, back-to-back frames are exact down to B = 4, and B <= 2 sets LATE.
 
 ```
         SET   tx, 1              ; line idles high
@@ -95,7 +95,7 @@ bit:    ADDT  P                  ; T += B
         JMP   top
 ```
 
-Back-to-back bytes start exactly at the end of the previous stop bit; after idle, the start bit follows 2 cycles after the PULL returns. The two scheduler slots throttle the loop so it never runs more than two edges ahead. The v1.0 example (`ADDT 0, now` then `OUT @T+0`) was late by construction, since the slot was armed for a cycle that had already passed; that case becomes an ISS regression test in Phase 3.
+Back-to-back bytes start exactly at the end of the previous stop bit; after idle, the start bit follows 2 cycles after the PULL returns. The two scheduler slots throttle the loop so it never runs more than two edges ahead. The v1.0 example (`ADDT 0, now` then `OUT @T+0`) was late by construction, since the slot was armed for a cycle that had already passed; that case is now an ISS regression test.
 
 Three things this gives that PIO does not: hardware WAIT with timeout (needed for CAN arbitration, I2C clock stretching and USB turnaround), deferred hardware sampling at a computed time (a mid-bit read is one instruction), and a snapshot of every pin at the edge so a slave can read data exactly at the clock edge. UART, SPI master and slave, and I2C master are expected to fit in 12 words or fewer, so the 32-word program memory holds two protocols per EM; the firmware library measures this against the 25 Oct milestone.
 
@@ -262,20 +262,20 @@ Cut order, cheapest first: 1. Manchester serializer and DDR capture. 2. CRC unit
 
 Submission is targeted for 12 Jan 2027, six days before the 18 Jan 2027 deadline, with a feature freeze on 20 Dec 2026; the ISS and firmware come before any RTL so the ISA is proven cheap.
 
-| Date | Milestone | Owner |
-| --- | --- | --- |
-| 4 Oct 2026 | Counter through the CMOS5L template to GDS; logic level, SRAM macro and I/O speed questions answered; Tang Nano 20K and test devices ordered | Gautam |
-| 11 Oct 2026 | Partner decision; Hardcaml or Verilog decided; core clock chosen (40, 50 or 60 MHz); ISA v1 frozen (this doc) | Gautam |
-| 25 Oct 2026 | ISS, assembler and disassembler; UART, SPI and I2C firmware passing on the ISS; protocol simulator emitting edge streams for training; shruti prove v0 proves the UART transmit contract with symbolic data and bit period | Gautam |
-| 8 Nov 2026 | EM0 RTL passes differential tests against the ISS; first measured synthesis cell count | Partner |
-| 15 Nov 2026 | Feature extractor RTL with bit-exact reference; first Ear model trained on synthetic data, weights loading over SPI | Gautam |
-| 29 Nov 2026 | Checkpoint: both EMs, host SPI, monitors, recorder and Ear integrated; UART, SPI and I2C pass protocol tests and their contracts are proven; cell count under 13,000 or the cut list applies | Both |
-| 6 Dec 2026 | FPGA bring-up against a USB-UART adapter, SPI flash and I2C sensor; capture dataset started; Ethernet link pulses light a switch LED if the serializer is in | Partner |
-| 13 Dec 2026 | Formal suite closes, classifier proof included; Ear fine-tuned on FPGA captures; confusion matrix and OOD numbers recorded | Gautam |
-| 20 Dec 2026 | Feature freeze; low-speed USB, Ethernet frame transmit and the LLM-written, prover-accepted PS/2 firmware demo count only if already passing | Both |
-| 4 Jan 2027 | Place-and-route, timing signoff at 50 MHz, gate-level simulation of key tests | Partner |
-| 12 Jan 2027 | Submission: README, ISA reference, verification report with bugs-per-method table, demo video | Gautam |
-| 18 Jan 2027 | Jane Street deadline (buffer) | |
+| Date | Milestone | Owner | Status |
+| --- | --- | --- | --- |
+| 4 Oct 2026 | Counter through the CMOS5L template to GDS; logic level, SRAM macro and I/O speed questions answered; Tang Nano 20K and test devices ordered | Gautam | Tiles checked: the CMOS5L precheck tables list 6x4 and 8x4. First CI runs on main failed before any step ran; not yet diagnosed |
+| 11 Oct 2026 | Partner decision; Hardcaml or Verilog decided; core clock chosen (40, 50 or 60 MHz); ISA v1 frozen (this doc) | Gautam | ISA v1.1 reconciled (docs/isa-decisions.md); freeze pending |
+| 25 Oct 2026 | ISS, assembler and disassembler; UART, SPI and I2C firmware passing on the ISS; protocol simulator emitting edge streams for training; shruti prove v0 proves the UART transmit contract with symbolic data and bit period | Gautam | ISS done (iss/, 386 tests incl. UART TX timing); assembler, firmware, prover pending |
+| 8 Nov 2026 | EM0 RTL passes differential tests against the ISS; first measured synthesis cell count | Partner |  |
+| 15 Nov 2026 | Feature extractor RTL with bit-exact reference; first Ear model trained on synthetic data, weights loading over SPI | Gautam |  |
+| 29 Nov 2026 | Checkpoint: both EMs, host SPI, monitors, recorder and Ear integrated; UART, SPI and I2C pass protocol tests and their contracts are proven; cell count under 13,000 or the cut list applies | Both |  |
+| 6 Dec 2026 | FPGA bring-up against a USB-UART adapter, SPI flash and I2C sensor; capture dataset started; Ethernet link pulses light a switch LED if the serializer is in | Partner |  |
+| 13 Dec 2026 | Formal suite closes, classifier proof included; Ear fine-tuned on FPGA captures; confusion matrix and OOD numbers recorded | Gautam |  |
+| 20 Dec 2026 | Feature freeze; low-speed USB, Ethernet frame transmit and the LLM-written, prover-accepted PS/2 firmware demo count only if already passing | Both |  |
+| 4 Jan 2027 | Place-and-route, timing signoff at 50 MHz, gate-level simulation of key tests | Partner |  |
+| 12 Jan 2027 | Submission: README, ISA reference, verification report with bugs-per-method table, demo video | Gautam |  |
+| 18 Jan 2027 | Jane Street deadline (buffer) | |  |
 
 ## Open questions for week one
 
