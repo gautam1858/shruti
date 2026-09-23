@@ -13,6 +13,7 @@ opcode_bits: 4
 program_words: 32            # PC is 5 bits and wraps 31 -> 0
 counter_bits: 24             # free-running timestamp counter, one tick per core clock
 pins: 12                     # 0-7 = B0-B7 (bidirectional), 8-11 = M0-M3 (input-only)
+pin_names: {B0: 0, B1: 1, B2: 2, B3: 3, B4: 4, B5: 5, B6: 6, B7: 7, M0: 8, M1: 9, M2: 10, M3: 11}
 output_pins: 8               # OUT and SET may target only pins 0-7
 fifo_depth: 4                # TX (host -> EM) and RX (EM -> host), 8 bits wide, per EM
 sync_flags: 4                # shared by both EMs and the host

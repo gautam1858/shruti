@@ -102,6 +102,7 @@ class ISA:
         self.output_pins: int = r["output_pins"]
         self.fifo_depth: int = r["fifo_depth"]
         self.sync_flags: int = r["sync_flags"]
+        self.pin_names: Dict[str, int] = {str(k): int(v) for k, v in r["pin_names"].items()}
         self.operand_bits = self.word_bits - self.opcode_bits
         self.by_name: Dict[str, InstrDef] = {}
         self.by_opcode: Dict[int, InstrDef] = {}
