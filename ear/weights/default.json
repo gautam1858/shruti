@@ -1,0 +1,132 @@
+{
+  "config": {
+    "shift": 3,
+    "margin": 21,
+    "floor": 18,
+    "min_edges": 24
+  },
+  "report": {
+    "classes": [
+      "UART",
+      "SPI",
+      "I2C",
+      "USB-LS",
+      "CAN",
+      "JTAG/SWD",
+      "PS/2",
+      "Manchester"
+    ],
+    "trained_classes": [
+      "UART",
+      "SPI",
+      "I2C",
+      "USB-LS",
+      "CAN",
+      "JTAG/SWD",
+      "PS/2",
+      "Manchester"
+    ],
+    "windows": {
+      "UART": 561,
+      "SPI": 790,
+      "I2C": 899,
+      "USB-LS": 900,
+      "CAN": 896,
+      "JTAG/SWD": 807,
+      "PS/2": 756,
+      "Manchester": 813
+    },
+    "shift": 3,
+    "margin": 21,
+    "floor": 18,
+    "min_edges": 24,
+    "val_accuracy": 0.9106,
+    "test_accuracy": 0.8655,
+    "confusion": [
+      [
+        16,
+        0,
+        0,
+        0,
+        42,
+        0,
+        15,
+        11
+      ],
+      [
+        0,
+        117,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        129,
+        0,
+        0,
+        5,
+        4,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        156,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        5,
+        0,
+        0,
+        0,
+        107,
+        0,
+        12,
+        2
+      ],
+      [
+        0,
+        1,
+        0,
+        0,
+        0,
+        105,
+        1,
+        0
+      ],
+      [
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        98,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        3,
+        20,
+        1,
+        3,
+        102
+      ]
+    ],
+    "confident_rate": 0.4338,
+    "confident_accuracy": 0.9952,
+    "ood_known": 0.0751,
+    "ood_unknown": null
+  }
+}

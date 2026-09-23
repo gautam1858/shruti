@@ -80,12 +80,12 @@ def test_histogram_is_invariant_to_power_of_two_speed_changes():
 
 def test_window_closes_at_256_edges_then_pauses():
     edges = _toggle(1, range(10, 10 + 10 * 600, 10))
-    ws = extract([0, 0, 0, 0], edges, 20_000)
+    ws = extract([0, 0, 0, 0], edges, 20_000, canonical=False)
     first = ws[0]
     assert first.start == 0 and first.end == 10 + 10 * 255 and first.edges == 256
     assert ws[1].start == first.end + 1 + INFER_CYCLES
-    assert ws[0].features[12 + 10] == 255                   # pin 1 edge count saturates
-    assert ws[0].features[12 + 11] == 127                   # high 1,280 of 2,561 cycles: 256*1280//2561
+    assert ws[0].features[12 + 10] == 63                    # pin 1: 255 (saturated) >> 2
+    assert ws[0].features[12 + 11] == 31                    # high 1,280 of 2,561 cycles: 64*1280//2561
 
 
 def test_window_closes_by_time_when_the_bus_is_slow():
@@ -105,7 +105,7 @@ def test_pair_features():
         if v != lvl:
             dedup.append((t, p, v))
             lvl = v
-    ws = extract([0, 0, 0, 0], sorted(clk + dedup), 70_000, max_edges=10_000)
+    ws = extract([0, 0, 0, 0], sorted(clk + dedup), 70_000, max_edges=10_000, canonical=False)
     f = ws[0].features
     near = dict(zip(PAIRS, f[48:60]))
     hi = dict(zip(PAIRS, f[60:72]))
@@ -114,7 +114,21 @@ def test_pair_features():
     assert near[(2, 1)] == 0 and hi[(2, 1)] == 0             # pin 2 is idle low
 
 
-def test_features_are_bytes_and_complete():
+def test_canonical_order_makes_features_independent_of_wiring():
+    rng = random.Random(11)
+    for label in ("SPI", "I2C", "JTAG/SWD", "USB-LS"):
+        cap = ps.generate(label, rng, duration=150_000)
+        base = ps.random_assignment(cap, rng)
+        feats = []
+        for perm in ([0, 1, 2, 3], [3, 2, 1, 0], [1, 3, 0, 2]):
+            assign = [base[i] for i in perm]
+            init, edges = ps.to_pins(cap, assign, idle=(0, 0, 0, 0))
+            ws = extract(init, filter_pins(init, edges, BYPASS), cap.duration)
+            feats.append([w.features for w in ws])
+        assert feats[0] == feats[1] == feats[2], label
+
+
+def test_features_are_six_bits_and_complete():
     rng = random.Random(3)
     for label in ps.CLASSES:
         cap = ps.generate(label, rng)
@@ -123,7 +137,7 @@ def test_features_are_bytes_and_complete():
         assert ws, label
         for w in ws:
             assert len(w.features) == N_FEATURES
-            assert all(0 <= x <= 255 for x in w.features)
+            assert all(0 <= x <= 63 for x in w.features)
 
 
 # -- classifier -------------------------------------------------------------------------
@@ -137,15 +151,17 @@ def _random_model(rng):
 def test_weight_chain_round_trip():
     rng = random.Random(4)
     m = _random_model(rng)
+    m.bias = [rng.randint(-128, 127) for _ in range(8)]
     b = m.to_bytes()
-    assert len(b) == 160
+    assert len(b) == 168
     assert Model.from_bytes(b).weights() == m.weights()
+    assert Model.from_bytes(b).bias == m.bias
     assert Model.from_hex(m.to_hex()).weights() == m.weights()
     # weight 0 is in the two least significant bits of byte 0
     m.w1[0][0] = -1
     assert m.to_bytes()[0] & 3 == 0b11
     with pytest.raises(ValueError):
-        Model.from_bytes(bytes([0b10]) + bytes(159))
+        Model.from_bytes(bytes([0b10]) + bytes(167))
 
 
 def test_inference_by_hand():
@@ -169,7 +185,19 @@ def test_inference_by_hand():
 
 
 def test_accumulator_fits_16_bits_for_any_input():
-    ones = Model([[1] * 72 for _ in range(8)], [[1] * 8 for _ in range(8)], Config(shift=0))
-    r = ones.infer([255] * 72)
+    ones = Model([[1] * 72 for _ in range(8)], [[1] * 8 for _ in range(8)], Config(shift=0),
+                 [127] * 8)
+    r = ones.infer([63] * 72)
     assert r.hidden == [255] * 8 and r.logits == [2040] * 8
-    assert 72 * 255 < 32768
+    assert 127 + 72 * 63 < 32768 and -128 - 72 * 63 >= -32768
+
+
+def test_thresholds_shift_the_hidden_units():
+    w1 = [[0] * 72 for _ in range(8)]
+    w1[0][0] = 1
+    m = Model(w1, [[0] * 8 for _ in range(8)], Config(shift=0), [-10] + [0] * 7)
+    f = [0] * 72
+    f[0] = 30
+    assert m.infer(f).hidden[0] == 20
+    f[0] = 5
+    assert m.infer(f).hidden[0] == 0

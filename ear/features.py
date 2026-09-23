@@ -1,8 +1,8 @@
 """Bit-exact reference of the Ear's feature extractor (the definition the RTL must match).
 
 Input: filtered edges on the 4 monitored pins, as (cycle, pin, level) from ear.inpath, and the
-pins' filtered levels before the first edge. Output: one 72-feature snapshot (8-bit values)
-per window. The definition, including the choices the architecture spec left open, is in
+pins' filtered levels before the first edge. Output: one 72-feature snapshot per window; every
+feature is 6 bits (0..63), so that no feature dominates a ternary dot product by scale alone. The definition, including the choices the architecture spec left open, is in
 ear/SPEC.md; this module is its executable form.
 
 Per pin p (12 features, 4 pins = 48):
@@ -12,13 +12,16 @@ Per pin p (12 features, 4 pins = 48):
               half-octaves the minimum moved, merging into bin 7.
   min_code    6-bit log2 code of the shortest interval (63 if the pin had no interval)
   max_code    6-bit code of the longest interval within 11x of the shortest (0 if none)
-  edges       8-bit saturating edge count
-  high        floor(256 * cycles_high / window_length), at most 255
+  edges       edge count (8-bit saturating counter), top 6 bits
+  high        floor(64 * cycles_high / window_length), at most 63
 Per ordered pair (a, b), a != b, in the order (0,1) (0,2) (0,3) (1,0) (1,2) ... (3,2):
   near[a][b]  6-bit saturating count of b edges no more than 4 cycles after the latest a edge
   hi[a][b]    6-bit saturating count of b edges while a is high
-Feature order: pin 0's 12, pin 1's 12, pin 2's 12, pin 3's 12, the 12 near counts, the 12 hi
-counts.
+Feature order: the four pins' 12 features in canonical order, then the 12 near counts and the
+12 hi counts over the same order. Canonical order sorts the pins by (edge count, time-high
+fraction), largest first, ties by pin number, so the features do not depend on which physical
+pins the bus was wired to. The hardware sorts the four 16-bit keys at the end of the window
+and remaps the feature read address; the counters themselves stay per pin.
 
 A window closes at the end of the cycle in which the edge count on the monitored pins reaches
 256, or after 65,536 cycles, whichever comes first. The classifier then runs for
@@ -60,6 +63,7 @@ class Window:
     end: int                                       # last cycle, inclusive
     features: List[int]
     edges: int                                     # edges counted (all monitored pins)
+    order: List[int] = field(default_factory=lambda: list(range(PINS)))  # canonical slot -> pin
 
     @property
     def length(self) -> int:
@@ -102,10 +106,17 @@ class _PinState:
             self.max_code = code
 
 
+def canonical_order(per_pin: Sequence[Sequence[int]]) -> List[int]:
+    """Pins sorted by (edge count, time-high fraction) descending, ties by pin number: the
+    features are then the same whichever physical pins the user wired the bus to."""
+    return sorted(range(PINS), key=lambda p: (-per_pin[p][10], -per_pin[p][11], p))
+
+
 class Extractor:
     def __init__(self, initial: Sequence[int], start: int = 0,
                  max_edges: int = MAX_EDGES, max_cycles: int = MAX_CYCLES,
-                 infer_cycles: int = INFER_CYCLES):
+                 infer_cycles: int = INFER_CYCLES, canonical: bool = True):
+        self.canonical = canonical
         self.level = list(initial)
         self.max_edges, self.max_cycles, self.infer = max_edges, max_cycles, infer_cycles
         self.windows: List[Window] = []
@@ -130,13 +141,17 @@ class Extractor:
     def _close(self, end: int) -> None:
         self._accumulate_high(end + 1)
         length = end - self.w0 + 1
-        f: List[int] = []
+        per = []
         for s in self.pins:
-            f += list(s.hist)
-            f += [s.min_code, s.max_code, _sat(s.edges, 8), min(255, (s.high * 256) // length)]
-        f += [self.near[pr] for pr in PAIRS]
-        f += [self.hi[pr] for pr in PAIRS]
-        self.windows.append(Window(self.w0, end, f, self.n_edges))
+            per.append(list(s.hist) + [s.min_code, s.max_code, _sat(s.edges, 8) >> 2,
+                                       min(63, (s.high * 64) // length)])
+        order = canonical_order(per) if self.canonical else list(range(PINS))
+        f: List[int] = []
+        for p in order:
+            f += per[p]
+        f += [self.near[(order[a], order[b])] for a, b in PAIRS]
+        f += [self.hi[(order[a], order[b])] for a, b in PAIRS]
+        self.windows.append(Window(self.w0, end, f, self.n_edges, order))
         self._open(end + 1 + self.infer)
 
     def _close_by_time_before(self, c: int) -> None:
