@@ -1,4 +1,4 @@
-# shruti prove v0: design note (for approval)
+# shruti prove v0: design note (approved)
 
 Goal: prove that `fw/uart_tx.s` meets its contract for every data byte and every bit period B in the supported range, in under a second, and for a broken program, return a counterexample pin trace that the ISS reproduces.
 
@@ -74,8 +74,19 @@ The symbolic interpreter is a second implementation of the ISA semantics. The v0
   - Broken variants each yield an ISS-confirmed counterexample: a missing stop-bit ADDT, `ADDT 1, now` (late start), `ADDT P/2` in the data loop, and MSB-first order.
 - Out of v0: UART RX, SPI and I2C contracts (the 29 Nov milestone), symbolic input edges for reactive programs, and a formal link to the RTL.
 
-## Questions for approval
+## Questions at approval (resolved with the defaults: YAML, 2 frames, a shruti/ package)
 
 1. Is YAML with a small expression language the right contract format? The alternative is Python contract objects, which are more flexible but harder to read or generate.
 2. Is a bound of 2 frames enough for v0? It covers idle-to-first-byte and back-to-back. A proof for an unbounded number of frames needs an inductive invariant at `top`, the loop head: "T is at least the end of the last stop bit, the line is high, and no slot is pending past T". That is a v1 item.
 3. Should the CLI live in a new `shruti/` Python package, as proposed, or as a script under `tools/`?
+
+## As built (differences from the proposal above)
+
+- **Contract syntax:** the frame description is a single `frames:` block (`for_each: tx_fifo`, `start: {within: 5}`, `length`, `waveform`) plus `idle: {level, from}`. `fw/uart_tx.contract.yaml` is the reference.
+- **Counter wrap:** instead of bounding the total explored span, every write of T carries the obligation "less than 2^23 cycles ahead of the counter". Every OUT carries `1 <= fire - now < 2^23`. That makes unbounded arrival times, and so arbitrarily long idle, part of the proof.
+- **Frame start:** a frame starts at the first drive to the active level at or after the previous frame's end.
+- **Level checks:** the prover first proves that the pin's drive events come in application order. It then encodes "level at t" as a linear chain. If that proof fails, it falls back to the general pairwise encoding.
+- **Results:**
+  - Proved for P = 8..65,535 in about 0.5 s.
+  - The smallest P for which the contract holds is 3, not the 4 predicted above. The contract allows a frame to start up to 5 cycles after the previous one ends, and at P = 3 back-to-back frames pick up small gaps that this allowance accepts. The ISS test that requires zero gap holds down to 4.
+- **Differential test:** the check against the ISS covers `uart_tx.s` and five broken variants. The other programs in `fw/` use WAIT, IN or pin-dependent jumps, which v0 refuses.
