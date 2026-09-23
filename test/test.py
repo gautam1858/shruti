@@ -82,3 +82,44 @@ async def pins_are_independent(dut):
         strobes_6 += (v >> 6) & 1
         strobes_other += bin(v & ~(1 << 6)).count("1")
     assert strobes_6 == 1 and strobes_other == 0
+
+
+# Differential test: the RTL input path against the Python reference model in ear/inpath.py,
+# cycle by cycle, for every filter mode and random pulse widths on all eight pins.
+
+import random  # noqa: E402
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from ear.inpath import filter_cycles  # noqa: E402
+
+
+def random_levels(rng, n):
+    out, level = [], 0
+    while len(out) < n:
+        out += [level] * rng.choice([1, 1, 2, 2, 3, 4, 5, 6, 8, 13])
+        level ^= 1
+    return out[:n]
+
+
+@cocotb.test()
+async def input_path_matches_reference_model(dut):
+    cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())
+    rng = random.Random(2026)
+    n = 800
+    for mode in (BYPASS, MAJ_2OF3, MAJ_3OF5):
+        await reset(dut, mode)
+        u = [random_levels(rng, n) for _ in range(8)]
+        observed = []
+        for k in range(n):
+            await RisingEdge(dut.clk)
+            dut.uio_in.value = sum(u[p][k] << p for p in range(8))
+            await ReadOnly()
+            observed.append(int(dut.uo_out.value))
+        for p in range(8):
+            _, strobe = filter_cycles(u[p], mode, before=0)
+            got = [(o >> p) & 1 for o in observed]
+            assert got == strobe, f"mode {mode}, pin {p}: first mismatch at cycle " \
+                f"{next(i for i, (a, b) in enumerate(zip(got, strobe)) if a != b)}"
+        await RisingEdge(dut.clk)              # leave the read-only phase before the next reset

@@ -103,7 +103,7 @@ Three things this gives that PIO does not: hardware WAIT with timeout (needed fo
 
 The Ear turns raw edge timing into 72 speed-invariant features in hardware, classifies them with a host-loaded ternary MLP, and reports a class, a confidence flag and an out-of-distribution flag. Its per-pin bit-period estimate gives the protocol's speed without any ML.
 
-Speed invariance is the design insight: intervals are coded in the log2 domain (leading-one position plus two mantissa bits, 6 bits total), and the histogram bins each interval by its ratio to the shortest interval seen in the window. A 9600-baud UART and a 1-Mbaud UART then produce the same feature vector, which is what lets a model this small generalise.
+Speed invariance is the design insight: intervals are coded in the log2 domain (leading-one position plus two mantissa bits, 6 bits total), and the histogram bins each interval by its ratio to the shortest interval seen so far in the window (a running minimum; the histogram shifts when a shorter interval arrives). A 9600-baud UART and a 1-Mbaud UART then produce the same interval histogram, exactly for power-of-two speed ratios and to within a half-octave bin otherwise, which is what lets a model this small generalise; the shortest-interval code and the edge counts still carry the absolute speed (the v1.0 text claimed the whole feature vector was the same, which it is not). The bit-exact definition is ear/SPEC.md.
 
 | Feature group (4 monitored pins, host-selected) | Per pin or pair | Bits | What it separates |
 | --- | --- | --- | --- |
@@ -113,7 +113,7 @@ Speed invariance is the design insight: intervals are coded in the log2 domain (
 | Pair: b-edges within 4 cycles of an a-edge | 12 pairs x 6 bits | 72 | Differential pairs (USB D+/D-), data-follows-clock |
 | Pair: b-edges while a is high | 12 pairs x 6 bits | 72 | I2C (SDA changes only while SCL low, except START/STOP) vs SPI modes |
 
-A window closes after 256 edges or 65,536 cycles, whichever comes first; the features are snapshotted and the counters restart. Inference is a serial multiply-accumulate: one feature per cycle, 8 accumulators of 16 bits, add, subtract or skip per ternary weight, then ReLU and an 8-way output layer. 72 x 8 + 8 x 8 = 640 weights at 2 bits = 1,280 bits, so a full pass takes about 700 cycles, 14 us at 50 MHz. Class = argmax; confident = (best - second best) above a host-set margin; OOD = best logit below a host-set floor, plus an activity gate. OOD is the weakest link and is validated empirically (section 9), not assumed.
+A window closes after 256 edges or 65,536 cycles, whichever comes first; the features are snapshotted and the counters restart. Inference is a serial multiply-accumulate: one ternary weight per cycle into a single 16-bit accumulator (add, subtract or skip), ReLU and a host-set right shift to 8 bits as each hidden unit completes, then an 8-way output layer. 72 x 8 + 8 x 8 = 640 weights at 2 bits = 1,280 bits, so a full pass takes 640 cycles plus 8 for the argmax, 648 cycles or 13 us at 50 MHz (the v1.0 text said one feature per cycle with 8 accumulators, which contradicts its own ~700-cycle figure and would need 8 adders). Class = argmax; confident = (best - second best) above a host-set margin; OOD = best logit below a host-set floor, plus an activity gate. OOD is the weakest link and is validated empirically (section 9), not assumed.
 
 The retraining loop is what makes the Ear reprogrammable after fabrication, and it is the part competitors will not have:
 
@@ -168,7 +168,7 @@ The design holds about 5,000 bits of state (the table's sum; v1.0 of this text s
 | Host FIFOs, 4 deep x 8 bits, TX and RX per EM | 128 | 250 | |
 | Host SPI, register map, read mux | ~60 | 800 | |
 | Feature extractor, 4 pins + 12 pairs | ~600 | 1,200 | Cut: 3 pins, 6 pairs |
-| Ear classifier: weights as a shift chain, 8 x 16-bit accumulators, argmax | ~1,500 | 2,200 | No feature snapshot: counters pause 700 cycles during inference. Cut: hidden layer 8 to 6 |
+| Ear classifier: weights as a shift chain, one 16-bit accumulator, 8 hidden bytes, 8 12-bit logits, argmax | ~1,500 | 2,200 | No feature snapshot: counters pause 648 cycles during inference. Cut: hidden layer 8 to 6 |
 | Rule monitors x4 | ~210 | 400 | Cut: 2 monitors |
 | Flight recorder, 32 x 21 bits as a shift ring | 672 | 800 | Shift-out readout avoids a read mux. Cut: 16 entries |
 | CRC5/CRC16 unit (USB), optional | 16 | 150 | Drop if USB is not attempted |
