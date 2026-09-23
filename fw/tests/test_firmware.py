@@ -14,6 +14,7 @@ UART_B = [16, 50, 434, 5208]            # 3.125 Mbaud, 1 Mbaud, 115200, 9600 at 
 def test_word_counts_fit_the_program_memory():
     sizes = {n: len(fw.load(n)) for n in ("uart_tx", "uart_rx", "spi_master", "i2c_master")}
     assert sizes == {"uart_tx": 12, "uart_rx": 17, "spi_master": 19, "i2c_master": 32}
+    assert len(fw.load("spi_slave")) == 18
 
 
 # -- UART TX ------------------------------------------------------------------------------
@@ -212,3 +213,61 @@ def test_i2c_two_transactions_keep_bus_free_time():
     assert slave.transactions == [[0xA0, 0x10], [0xA0, 0x20]]
     t = i2c_timing(res.trace, SCL, SDA)
     assert t["bus_free"] >= P
+
+
+# -- SPI slave ----------------------------------------------------------------------------
+
+from fw.peers import Wire, spi_master_stimulus  # noqa: E402
+
+S_SCK, S_MOSI, S_CS, S_MISO = 8, 10, 11, 4
+
+
+def run_spi_slave(out, replies, half, setup):
+    stim, rises = spi_master_stimulus(S_SCK, S_MOSI, S_CS, out, half, setup)
+    sim = Sim([fw.load("spi_slave")], stimulus=stim, initial={S_CS: 1, S_SCK: 0, S_MOSI: 1},
+              host_tx=[[(0, b) for b in replies]])
+    res = sim.run(max(c for c, _, _ in stim) + 200)
+    got = [sum(res.level_at(S_MISO, t) << (7 - k) for k, t in enumerate(r)) for r in rises]
+    return sim, res, got
+
+
+@pytest.mark.parametrize("half,setup", [(4, 5), (8, 8), (40, 40), (1000, 1000)])
+def test_spi_slave_against_master_model(half, setup):
+    rng = random.Random(half)
+    out = [rng.randrange(256) for _ in range(5)]
+    replies = [rng.randrange(256) for _ in range(5)]
+    sim, res, got = run_spi_slave(out, replies, half, setup)
+    assert res.host_rx[0] == out
+    assert got == replies
+    assert not res.ems[0].LATE and not res.ems[0].OVF
+    assert sim.oe[S_MISO] == 0                  # MISO released after the last byte
+
+
+def test_spi_slave_limits():
+    """Measured: 4 cycles from CS to the first rise is too short for MISO bit 7, SCK phases
+    of 3 cycles corrupt MISO, and phases of 2 cycles lose MOSI bits."""
+    out, replies = [0xA5, 0x3C], [0x5A, 0xC3]
+    assert run_spi_slave(out, replies, 4, 4)[2] != replies
+    assert run_spi_slave(out, replies, 3, 5)[2] != replies
+    assert run_spi_slave(out, replies, 3, 5)[1].host_rx[0] == out
+    assert run_spi_slave(out, replies, 2, 5)[1].host_rx[0] != out
+
+
+def test_spi_master_and_slave_on_two_ems():
+    """EM0 runs spi_master, EM1 runs spi_slave; the board wires them together."""
+    P = 9                                      # the smallest P this pairing supports
+    out = [0x12, 0xFE, 0x81]
+    replies = [0xC0, 0x0F, 0x55]
+    wires = Wire([(SCK, S_SCK), (MOSI, S_MOSI), (CS, S_CS), (S_MISO, MISO)])
+    sim = Sim([fw.load("spi_master"), fw.load("spi_slave")], P=[P, 0], devices=[wires],
+              host_tx=[[(100, b) for b in out], [(0, b) for b in replies]])
+    res = sim.run(3000)
+    assert res.host_rx[0] == replies           # master received the slave's replies
+    assert res.host_rx[1] == out               # slave received the master's bytes
+    assert not res.ems[0].LATE and not res.ems[1].LATE
+    # One cycle less and the master misreads MISO, with no flag raised.
+    sim = Sim([fw.load("spi_master"), fw.load("spi_slave")], P=[P - 1, 0],
+              devices=[Wire([(SCK, S_SCK), (MOSI, S_MOSI), (CS, S_CS), (S_MISO, MISO)])],
+              host_tx=[[(100, b) for b in out], [(0, b) for b in replies]])
+    res = sim.run(3000)
+    assert res.host_rx[0] != replies and not res.ems[0].LATE

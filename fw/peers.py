@@ -213,3 +213,57 @@ def i2c_timing(trace: Sequence[Tuple[int, int, int]], scl: int, sda: int):
     m = lambda xs: min(xs) if xs else None
     return {"low": m(low), "high": m(high), "start_hold": m(hold), "stop_setup": m(setup),
             "bus_free": m(buf)}
+
+
+def spi_master_stimulus(sck: int, mosi: int, cs: int, data: Sequence[int], half: int,
+                        setup: int, start: int = 20, gap: int = 50):
+    """Mode-0 SPI master as stimulus: CS falls with MOSI bit 7, SCK rises `setup` cycles
+    later, each SCK phase lasts `half` cycles, MOSI changes on falling edges. Returns the
+    edges and, per byte, the rising-edge cycles (where the master samples MISO)."""
+    edges: List[Tuple[int, int, int]] = []
+    rises: List[List[int]] = []
+    t = start
+    mosi_level = 1
+    for byte in data:
+        edges.append((t, cs, 0))
+        r = []
+        bits = [(byte >> (7 - k)) & 1 for k in range(8)]
+        if bits[0] != mosi_level:
+            edges.append((t, mosi, bits[0]))
+            mosi_level = bits[0]
+        rise = t + setup
+        for k in range(8):
+            edges.append((rise, sck, 1))
+            r.append(rise)
+            fall = rise + half
+            edges.append((fall, sck, 0))
+            if k < 7 and bits[k + 1] != mosi_level:
+                edges.append((fall, mosi, bits[k + 1]))
+                mosi_level = bits[k + 1]
+            rise = fall + half
+        t = rise
+        edges.append((t, cs, 1))
+        rises.append(r)
+        t += gap
+    return edges, rises
+
+
+class Wire(Device):
+    """Copies pad levels from one pin to another one cycle later (board wiring)."""
+
+    def __init__(self, pairs: Sequence[Tuple[int, int]]):
+        self.pairs = list(pairs)
+
+    def attach(self, sim) -> None:
+        super().attach(sim)
+        self.prev = {a: sim.pad[a] for a, _ in self.pairs}
+        for a, b in self.pairs:
+            sim.ext[b] = sim.pad[a]
+            sim.pad[b] = sim.pad[a]
+
+    def on_cycle(self, c: int) -> None:
+        for a, b in self.pairs:
+            v = self.sim.pad[a]
+            if v != self.prev[a]:
+                self.sim.set_external(b, v, c + 1)
+                self.prev[a] = v
