@@ -1,0 +1,11 @@
+# Contract for spi_master.s: mode 0, MSB first, one byte per chip select.
+program: spi_master.s
+kind: spi_master
+assume:
+  P: {min: 5, max: 65535}          # half the SCK period in cycles, written by the host
+  pins: {sck: B2, mosi: B3, miso: M1, cs: B5}
+  tx_fifo: [d0, d1]                # two symbolic bytes with symbolic arrival times
+  miso: [m0, m1]                   # the bytes the slave shifts back
+  slave_delay: {min: 1, max: 2}    # cycles from an edge at the slave's pin to its MISO change
+guarantee:
+  never: [LATE, UNF, HALT]

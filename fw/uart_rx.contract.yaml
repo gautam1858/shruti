@@ -1,0 +1,15 @@
+# Contract for uart_rx.s: every 8N1 frame from a peer at the same bit period is received
+# exactly, with no framing error and no late sample, even with edge jitter.
+program: uart_rx.s
+kind: receiver
+assume:
+  P: {min: 16, max: 65535}         # bit period B in cycles, written by the host
+  rx:
+    pin: M0
+    frames: [d0, d1]               # two symbolic bytes, back to back or with any gap
+    first_start: 20                # the line idles high at least until this cycle
+    jitter: "P//16"                # each edge after the start edge may move by up to P/16
+guarantee:
+  never: [LATE, HALT]
+  rx_fifo: frames
+  sync_never: [0]                  # no framing error

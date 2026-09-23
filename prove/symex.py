@@ -171,13 +171,14 @@ class SymExec:
             raise Unsupported("program branches on symbolic values: use paths()")
         return out[0]
 
-    def paths(self, assumptions: Sequence[z3.BoolRef]) -> List[SymResult]:
-        """Every path feasible under the assumptions."""
-        return self._explore(list(assumptions))
+    def paths(self, assumptions: Sequence[z3.BoolRef], on_path=None) -> List[SymResult]:
+        """Every path feasible under the assumptions. If on_path is given it is called with
+        each finished path, and exploration stops as soon as it returns True."""
+        return self._explore(list(assumptions), on_path)
 
     # -- exploration ---------------------------------------------------------------------
 
-    def _explore(self, assumptions) -> List[SymResult]:
+    def _explore(self, assumptions, on_path=None) -> List[SymResult]:
         solver = None
         if assumptions is not None:
             solver = z3.Solver()
@@ -190,6 +191,8 @@ class SymExec:
                 res = self._step(s)
                 if isinstance(res, SymResult):
                     done.append(res)
+                    if on_path is not None and on_path(res):
+                        return done
                     break
                 if res is None:
                     continue
@@ -206,6 +209,8 @@ class SymExec:
                         continue
                     if label == "stuck":
                         done.append(self._end(st, "WAIT never matches"))
+                        if on_path is not None and on_path(done[-1]):
+                            return done
                     else:
                         succ.append(st)
                 if not succ:
