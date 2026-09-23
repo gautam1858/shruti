@@ -18,10 +18,14 @@ module tb ();
   reg rst_n;
   reg ena;
   reg [7:0] ui_in;
-  reg [7:0] uio_in;
+  reg [7:0] ext;      // what the outside world drives onto the bus pins (1 = pulled up)
+  wire [7:0] uio_in;
   wire [7:0] uo_out;
   wire [7:0] uio_out;
   wire [7:0] uio_oe;
+
+  // Pad model: a pin the chip drives reads back its own level, otherwise the external level.
+  assign uio_in = (uio_oe & uio_out) | (~uio_oe & ext);
 
   // Shruti top level:
   tt_um_gautam1858_shruti user_project (
