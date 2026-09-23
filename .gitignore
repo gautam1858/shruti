@@ -1,0 +1,29 @@
+.DS_Store
+.idea
+*.vcd
+*.fst
+*.fst.hier
+runs
+tt_submission
+src/user_config.json
+src/config_merged.json
+test/sim_build
+test/__pycache__/
+test/results.xml
+test/gate_level_netlist.v
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+
+# OCaml / dune (if the RTL is written in Hardcaml)
+_build/
+_opam/
+*.install
+
+# Editors and OS
+*.swp
+.vscode/*.log

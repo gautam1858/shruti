@@ -1,0 +1,32 @@
+digraph shruti {
+  rankdir=TB; splines=spline; nodesep=0.45; ranksep=0.5; bgcolor="white";
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, margin="0.18,0.08", penwidth=1.1];
+  edge [color="#444444", arrowsize=0.7, penwidth=1.0];
+
+  P   [label="Bus pins\n8 bidir + 4 input-only", fillcolor="#e8eef7", color="#5a7bb0"];
+  F   [label="Sync + 3-of-5\nmajority filter",      fillcolor="#e8eef7", color="#5a7bb0"];
+  E   [label="Edge detect +\n24-bit timestamp",     fillcolor="#e8eef7", color="#5a7bb0"];
+
+  EM  [label="Event Machines x2\n(speak)",           fillcolor="#e6f3e6", color="#4f9a55"];
+  SCH [label="Scheduler\ntime-compare",              fillcolor="#e6f3e6", color="#4f9a55"];
+
+  FX  [label="Feature extractor\nspeed-invariant",   fillcolor="#fdf1dc", color="#c9932a"];
+  EAR [label="Ear classifier\nternary MLP (listen)", fillcolor="#fdf1dc", color="#c9932a"];
+
+  RM  [label="Rule monitors x4",                     fillcolor="#f7e6e6", color="#b55151"];
+  TR  [label="Trigger logic",                        fillcolor="#f7e6e6", color="#b55151"];
+  RB  [label="Flight recorder\n32-entry ring (watch)", fillcolor="#f7e6e6", color="#b55151"];
+
+  H   [label="Host SPI +\nregister map",             fillcolor="#eeeeee", color="#777777"];
+  IRQ [label="IRQ + class LEDs",                     fillcolor="#eeeeee", color="#777777"];
+
+  { rank=same; EM; FX; RM; RB; }
+  { rank=same; SCH; EAR; TR; }
+  P -> F -> E;
+  E -> EM; E -> FX; E -> RM; E -> RB;
+  FX -> EAR;
+  EAR -> TR; RM -> TR; TR -> RB;
+  EM -> SCH; SCH -> P [constraint=false];
+  H -> EM; H -> EAR; RB -> H [constraint=false];
+  TR -> IRQ;
+}

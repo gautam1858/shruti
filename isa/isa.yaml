@@ -1,0 +1,59 @@
+# Shruti Event Machine ISA, v1.0 draft (frozen 11 Oct 2026).
+# Single source of truth: the ISS, the assembler and the RTL decoder are generated from this file.
+# Instruction word: 16 bits = 4-bit opcode (bits 15..12) + 12 bits of operands.
+# Timing model: T is the per-EM time register, set by hardware to the timestamp of the last
+# matched edge (WAIT) or moved explicitly (ADDT). d is a delay = 8-bit count x prescale.
+
+word_bits: 16
+opcode_bits: 4
+program_words: 32
+pins: 12            # B0-B7 (bidirectional) + M0-M3 (input-only)
+prescale: [1, 4, 16, 64]
+
+instructions:
+  - name: WAIT
+    opcode: 0
+    operands: {pin: 4, edge: 2, timeout: 6}      # edge: 0 rise, 1 fall, 2 any; timeout: 0 = none, else 2^n cycles from T
+    semantics: Block until the edge on pin; T := edge timestamp; latch the 12-pin snapshot. On timeout set TO and continue.
+  - name: OUTAT
+    asm: "OUT pin, value @T+d"
+    opcode: 1
+    operands: {pin: 4, value: 2, d: 6}           # value: 0, 1, or 2 = next OSR bit; d: 4-bit count + 2-bit prescale
+    semantics: Arm a scheduler slot to drive pin to value at T+d. Non-blocking. Blocks only if both slots are busy.
+  - name: INAT
+    asm: "IN pin @T+d"
+    opcode: 2
+    operands: {pin: 4, d: 8}
+    semantics: Block until T+d, sample pin, shift into ISR. d = 0 reads the snapshot latched at the last matched edge.
+  - name: ADDT
+    opcode: 3
+    operands: {now: 1, d: 11}                    # now=1: T := counter + d; now=0: T := T + d
+    semantics: Move the time anchor without an edge. Generated timing is drift-free because T never depends on when the instruction ran.
+  - name: SHIFT
+    opcode: 4
+    operands: {dir: 1, n: 5, auto: 1}            # dir: 0 out (OSR), 1 in (ISR); auto: PULL/PUSH when the count reaches n
+    semantics: Shift OSR out or count ISR bits; optional automatic PULL or PUSH at n.
+  - name: PUSH
+    opcode: 5
+    operands: {block: 1}
+    semantics: ISR to RX FIFO; optionally block when full.
+  - name: PULL
+    opcode: 6
+    operands: {block: 1}
+    semantics: TX FIFO to OSR; optionally block when empty.
+  - name: SET
+    opcode: 7
+    operands: {target: 2, value: 10}             # target: 0 pin (value = pin:4 + level:1 + mode:1), 1 X, 2 Y
+    semantics: Immediate pin write (push-pull or open-drain release) or register load.
+  - name: JMP
+    opcode: 8
+    operands: {cond: 4, pin: 3, target: 5}       # cond: always, X--!=0, Y--!=0, pin high, pin low, TO, FIFO empty, FIFO full, slot busy
+    semantics: Conditional jump within the 32-word program.
+  - name: SYNC
+    opcode: 9
+    operands: {op: 1, flag: 2}                   # op: 0 set, 1 wait
+    semantics: Set or wait on one of four flags shared by the EMs and the host.
+  - name: HALT
+    opcode: 15
+    operands: {}
+    semantics: Stop the EM and raise IRQ. Any undefined opcode behaves as HALT.
