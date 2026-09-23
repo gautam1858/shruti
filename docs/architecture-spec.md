@@ -59,34 +59,45 @@ Edges enter on the left, get filtered and timestamped once, and fan out to every
 
 Every timing-critical instruction is anchored to T, a per-EM time register that hardware sets to the timestamp of the last matched edge, so the edge decides the timing and instruction latency never does. This is the honest answer to "what would you do differently from PIO": PIO counts delays from when an instruction runs; Shruti schedules from when the bus event happened. The lineage is the channel time latches of NXP's eTPU, credited openly.
 
-Per-EM state: PC (5 bits), T (24 bits), X and Y counters (16 bits each), ISR and OSR shift registers (16 bits each, with 5-bit counters), two scheduler slots (24-bit compare, pin, value), a timeout register, a 12-bit pin snapshot latched at the last matched edge, and flags. Instructions are 16 bits: a 4-bit opcode and 12 bits of operands; 32 words per EM.
+Per-EM state: PC (5 bits), T (24 bits) with a T_PASSED bit, X and Y counters (16 bits each), a bit-period register P (16 bits), ISR and OSR shift registers (16 bits each, with 5-bit counters), a shift configuration register (bit order, word length and autopull/autopush threshold per direction), two scheduler slots (24-bit compare, pin, value), a 12-bit pin snapshot latched at the last matched edge, per-pin push-pull/open-drain mode, and the TO, LATE, OVF and UNF flags. Instructions are 16 bits: a 4-bit opcode and 12 bits of operands; 32 words per EM. The encoding table below is a summary; [isa/isa.yaml](../isa/isa.yaml) (v1.1) is normative, and [isa-decisions.md](isa-decisions.md) records why each choice was made.
 
-| Instruction | Form | Behaviour |
-| --- | --- | --- |
-| WAIT | WAIT pin, edge, timeout | Block until the edge; T := its timestamp and the pin snapshot is latched. Timeout runs from T; on expiry the TO flag is set and execution continues |
-| OUT@ | OUT pin, value @ T+d | Arm a scheduler slot: drive pin to value at exactly T+d. Non-blocking; value may be the next OSR bit. d = 8 bits x prescale (1, 4, 16 or 64 cycles) |
-| IN@ | IN pin @ T+d | Block until T+d, sample the pin in hardware, shift into ISR. d = 0 reads the snapshot, i.e. the bus as it was at the edge |
-| ADDT | ADDT d [, now] | T := T + d, or T := current counter + d. Advances the anchor without an edge, so generated timing is drift-free |
-| SHIFT | SHIFT out n / in n | Shift OSR out or count ISR bits; auto PULL or PUSH when the counter reaches n |
-| PUSH / PULL | PUSH / PULL [block] | ISR to RX FIFO, TX FIFO to OSR; optional block on empty or full |
-| SET | SET pin, v / SET X, imm / SET Y, imm | Immediate pin write or register load |
-| JMP | JMP cond, target | Conditions: always, X-- != 0, Y-- != 0, pin high or low, TO set, FIFO empty or full, slot busy |
-| SYNC | SYNC set n / wait n | Four flags shared by the EMs and the host for handshakes |
+| Op | Instruction | Operands (bits 11..0) | Behaviour |
+| --- | --- | --- | --- |
+| 0 | HALT | reserved | Stop, raise IRQ. Opcodes 12-15 and illegal operands also halt, so blank (all-zero) program memory halts |
+| 1 | WAIT pin, mode [, 2^n] | pin 4, mode 3, timeout 5 | Block until rise, fall, any edge, high or low level; T := match cycle, snapshot latched. Timeout 2^n cycles after T (n = 1..23): TO := 1, T := deadline, continue |
+| 2 | OUT pin, v @T+d | pin 4, value 2, d 6 | Arm a scheduler slot to drive pin at exactly T+d (d = 0..63). v = 0, 1, OSR (consumes exactly one bit) or ~OSR (next bit inverted, not consumed). Blocks only while both slots are busy |
+| 3 | IN pin @T+d / IN pin @snap | pin 4, snap 1, d 6 | Block until T+d and sample the pin, or read the snapshot without blocking; the bit goes into the ISR |
+| 4 | ADDT d [, now] | now 1, d 11 | T := T + d, or T := max(T, counter + d): the anchor never moves backwards |
+| 5 | ADDT P[/2\|/4\|/8] [, now] | now 1, shift 2 | As ADDT with d = P >> shift, so firmware never hard-codes the bit rate |
+| 6 | SHIFT out\|in, lsb\|msb, n [, auto] | dir 1, msb 1, auto 1, n-1 4 | Configuration only: bit order, word length n (1..16) and the autopull/autopush threshold |
+| 7 | PUSH [block] | block 1 | ISR word (1 or 2 bytes) to RX FIFO; non-blocking on full drops it and sets OVF |
+| 8 | PULL [block] | block 1 | TX FIFO to OSR (1 or 2 bytes); non-blocking on empty leaves the OSR unchanged |
+| 9 | SET pin, v [, pp\|od] / SET X\|Y\|P, imm | target 2, then pin 4, level 1, od 1 or imm 10 | Immediate pin drive and mode, or register load (0..1023; the host writes all 16 bits of P) |
+| 10 | JMP [cond,] target | cond 3, pin 4, target 5 | always, TO, LATE, TXE (TX FIFO empty), !OSRE (OSR not empty), X--!=0, Y--!=0, pin high, pin low on any of the 12 pins |
+| 11 | SYNC set\|wait, n | op 1, flag 2 | Four flags shared by the EMs and the host; wait blocks until the flag is set, then clears it |
 
-UART transmit at bit period B is seven instructions:
+Timing model: one cycle per instruction unless it blocks; all time comparisons are modulo 2^24, and a time t is in the future iff (t - counter) mod 2^24 is in [1, 2^23). An OUT@ whose target is not in the future, or an IN@ whose target has passed, still executes but sets the sticky LATE flag; LATE is visible to JMP and to the host, and every firmware contract requires that it is never set. A bit period is one "ADDT P" step up to 65,535 cycles (763 baud at 50 MHz); slower rates load P with 1/k of the period and take k steps per bit (300 baud: P = 55,556, three steps).
+
+UART transmit at bit period B (host sets P = B, TX pin push-pull) is twelve words. Traced by hand; ISS-verified in Phase 3.
 
 ```
-    PULL block
-    ADDT 0, now
-    OUT  tx, 0 @T+0        ; start bit
-bit: ADDT B
-    OUT  tx, OSR @T+0      ; data bit, then SHIFT out 1
-    JMP  X--!=0, bit
-    ADDT B
-    OUT  tx, 1 @T+0        ; stop bit
+        SET   tx, 1              ; line idles high
+        SHIFT out, lsb, 8        ; LSB first, 8 data bits
+top:    PULL  block              ; next byte -> OSR
+        ADDT  2, now             ; T := max(T, now + 2): never before the previous stop bit ends
+        OUT   tx, 0 @T+0         ; start bit
+bit:    ADDT  P                  ; T += B
+        OUT   tx, OSR @T+0       ; data bit, consumes one OSR bit
+        JMP   !OSRE, bit         ; 8 data bits
+        ADDT  P
+        OUT   tx, 1 @T+0         ; stop bit
+        ADDT  P                  ; T = end of stop bit
+        JMP   top
 ```
 
-Three things this gives that PIO does not: hardware WAIT with timeout (needed for CAN arbitration, I2C clock stretching and USB turnaround), deferred hardware sampling at a computed time (a mid-bit read is one instruction), and a snapshot of every pin at the edge so a slave can read data exactly at the clock edge. UART, SPI master and slave, and I2C master each fit in 12 words or fewer, so the 32-word program memory holds two protocols per EM.
+Back-to-back bytes start exactly at the end of the previous stop bit; after idle, the start bit follows 2 cycles after the PULL returns. The two scheduler slots throttle the loop so it never runs more than two edges ahead. The v1.0 example (`ADDT 0, now` then `OUT @T+0`) was late by construction, since the slot was armed for a cycle that had already passed; that case becomes an ISS regression test in Phase 3.
+
+Three things this gives that PIO does not: hardware WAIT with timeout (needed for CAN arbitration, I2C clock stretching and USB turnaround), deferred hardware sampling at a computed time (a mid-bit read is one instruction), and a snapshot of every pin at the edge so a slave can read data exactly at the clock edge. UART, SPI master and slave, and I2C master are expected to fit in 12 words or fewer, so the 32-word program memory holds two protocols per EM; the firmware library measures this against the 25 Oct milestone.
 
 ## The Ear: identifier and retraining loop
 
@@ -139,7 +150,7 @@ Twelve watchable bus pins, a 3-wire host SPI, and five status outputs use all 24
 | uo_out[4..6] | Ear class, 3 bits, straight to the demo board LEDs |
 | uo_out[7] | Ear OOD flag |
 
-Register map over SPI (8-bit command, 8-bit address, data): PROG0 and PROG1 (32 x 16 bits each), WEIGHTS (1,280 bits), FEATURES (72 bytes, read), RECORDER (32 x 21 bits, read), MON0-3 config, EAR config (4-pin select, margin, floor, window length), EM control (run, halt, reset, PC), TX and RX FIFOs (4 deep per EM), STATUS. Every bit of program, weights and configuration is host-loaded; nothing protocol-specific is fixed in silicon.
+Register map over SPI (8-bit command, 8-bit address, data): PROG0 and PROG1 (32 x 16 bits each), WEIGHTS (1,280 bits), FEATURES (72 bytes, read), RECORDER (32 x 21 bits, read), MON0-3 config, EAR config (4-pin select, margin, floor, window length), EM control (run, halt, reset, PC), EMx_P bit period and EMx_CFG shift configuration, TX and RX FIFOs (4 deep per EM), STATUS (including the sticky LATE, OVF and UNF flags per EM). Every bit of program, weights and configuration is host-loaded; nothing protocol-specific is fixed in silicon.
 
 Electrical: logic levels are whatever the Tiny Tapeout board provides (confirm 3.3 V in week one). I2C uses open-drain mode with external pull-ups; low-speed USB needs the external 1.5 kohm pull-up on D- and a level check, proven on the FPGA before it is claimed.
 

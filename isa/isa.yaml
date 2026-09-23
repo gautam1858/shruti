@@ -1,59 +1,246 @@
-# Shruti Event Machine ISA, v1.0 draft (frozen 11 Oct 2026).
-# Single source of truth: the ISS, the assembler and the RTL decoder are generated from this file.
-# Instruction word: 16 bits = 4-bit opcode (bits 15..12) + 12 bits of operands.
-# Timing model: T is the per-EM time register, set by hardware to the timestamp of the last
-# matched edge (WAIT) or moved explicitly (ADDT). d is a delay = 8-bit count x prescale.
+# Shruti Event Machine ISA.
+# Single source of truth: the ISS decoder, the assembler and the RTL decoder are generated
+# from this file or checked against it. Rationale for each decision: docs/isa-decisions.md.
+#
+# Instruction word: 16 bits = 4-bit opcode (bits 15..12) + 12 operand bits (11..0).
+# Field bit ranges below are [msb, lsb], inclusive, within the 16-bit word.
+# Reserved bits: the assembler emits 0; hardware ignores them; the ISS rejects nonzero
+# reserved bits in strict mode.
 
+version: "1.1"
 word_bits: 16
 opcode_bits: 4
-program_words: 32
-pins: 12            # B0-B7 (bidirectional) + M0-M3 (input-only)
-prescale: [1, 4, 16, 64]
+program_words: 32            # PC is 5 bits and wraps 31 -> 0
+counter_bits: 24             # free-running timestamp counter, one tick per core clock
+pins: 12                     # 0-7 = B0-B7 (bidirectional), 8-11 = M0-M3 (input-only)
+output_pins: 8               # OUT and SET may target only pins 0-7
+fifo_depth: 4                # TX (host -> EM) and RX (EM -> host), 8 bits wide, per EM
+sync_flags: 4                # shared by both EMs and the host
 
+# ---------------------------------------------------------------------------------------
+# Per-EM architectural state
+# ---------------------------------------------------------------------------------------
+state:
+  PC:        {bits: 5}
+  T:         {bits: 24, doc: "time anchor; set by WAIT to the matched edge's timestamp, moved by ADDT"}
+  T_PASSED:  {bits: 1,  doc: "1 once the counter has reached T (see timing.t_passed)"}
+  X:         {bits: 16}
+  Y:         {bits: 16}
+  P:         {bits: 16, doc: "bit period in cycles; written by the host (register EMx_P) or SET P"}
+  OSR:       {bits: 16, doc: "output shift register, holds a right-justified word of OUT_N bits"}
+  OSR_COUNT: {bits: 5,  doc: "bits consumed from OSR since the last pull, 0..16"}
+  ISR:       {bits: 16, doc: "input shift register, accumulates a right-justified word of IN_N bits"}
+  ISR_COUNT: {bits: 5,  doc: "bits shifted into ISR since the last push, 0..16"}
+  SNAPSHOT:  {bits: 12, doc: "all 12 pin levels latched at the last matched WAIT"}
+  SLOTS:     {count: 2, fields: {time: 24, pin: 3, value: 1, busy: 1}}
+  CFG:
+    doc: "shift configuration; written by SHIFT, readable and writable by the host"
+    fields:
+      OUT_MSB:   {bits: 1, doc: "0: OSR sends bit 0 first (LSB-first); 1: sends bit OUT_N-1 first"}
+      OUT_N:     {bits: 4, doc: "OSR word length minus 1 (1..16 bits); also the autopull threshold"}
+      AUTOPULL:  {bits: 1}
+      IN_MSB:    {bits: 1, doc: "0: first received bit lands in ISR[0]; 1: first bit lands in ISR[IN_N-1]"}
+      IN_N:      {bits: 4, doc: "ISR word length minus 1 (1..16 bits); also the autopush threshold"}
+      AUTOPUSH:  {bits: 1}
+  FLAGS:
+    TO:   {doc: "WAIT timed out. Set by WAIT, cleared by JMP TO"}
+    LATE: {doc: "an OUT@ or IN@ target time was not in the future. Sticky; cleared only by the host. Readable by JMP LATE and in the host STATUS register. Every contract requires LATE never set"}
+    OVF:  {doc: "a non-blocking PUSH dropped a word because the RX FIFO was full. Sticky; host-cleared"}
+    UNF:  {doc: "OUT value=OSR with the OSR empty and AUTOPULL off. Sticky; host-cleared"}
+  PIN_MODE:  {bits: 8, doc: "per bidirectional pin: 0 push-pull, 1 open-drain. Written by SET pin"}
+
+# Shared (not per EM): the 24-bit counter, the four SYNC flags, the pin drivers.
+# Pin drive after reset: every B pin undriven (input). Push-pull drive = level with output enabled.
+# Open-drain drive: level 0 pulls low, level 1 releases (output disabled).
+# If both EMs drive the same pin in the same cycle, EM1 wins.
+
+# ---------------------------------------------------------------------------------------
+# Timing model (the ISS, the RTL and the prover all follow this exactly)
+# ---------------------------------------------------------------------------------------
+timing:
+  cycle: >-
+    Each instruction takes one cycle unless it blocks. An instruction executing at cycle c
+    sees counter == c (mod 2^24). A blocking instruction completes at the cycle its condition
+    holds, and the next instruction executes on the following cycle.
+  future: >-
+    A time t is "in the future" at cycle c iff (t - c) mod 2^24 is in [1, 2^23).
+    All time comparisons are modular; programs must keep T within 2^23 cycles of the counter.
+  pin_output: >-
+    Pin trace times are the first cycle at which the pin output register holds the new value.
+    SET executing at cycle c takes effect at c+1. A scheduler slot armed for time t takes
+    effect at cycle t.
+  pin_input: >-
+    Pin reads (WAIT, IN, JMP pin, SNAPSHOT) see the filtered, synchronised level. An external
+    change at cycle e is first visible at e+L, where L is the input latency (2 cycles with the
+    filter in bypass); the edge is timestamped e+L. A pin's own drive is seen through the same path.
+  t_passed: >-
+    When T is written with value v at cycle c, T_PASSED := not future(v, c).
+    T_PASSED is set at every cycle where counter == T.
+  late: >-
+    OUT@ executing at cycle c with target t is on time iff t is in the future at c;
+    otherwise LATE := 1 and the pin takes effect at c+1.
+    IN@ executing at c with target t is on time iff t == c or t is in the future at c;
+    otherwise LATE := 1 and the pin is sampled at c.
+
+# ---------------------------------------------------------------------------------------
+# Instructions
+# ---------------------------------------------------------------------------------------
 instructions:
-  - name: WAIT
-    opcode: 0
-    operands: {pin: 4, edge: 2, timeout: 6}      # edge: 0 rise, 1 fall, 2 any; timeout: 0 = none, else 2^n cycles from T
-    semantics: Block until the edge on pin; T := edge timestamp; latch the 12-pin snapshot. On timeout set TO and continue.
-  - name: OUTAT
-    asm: "OUT pin, value @T+d"
-    opcode: 1
-    operands: {pin: 4, value: 2, d: 6}           # value: 0, 1, or 2 = next OSR bit; d: 4-bit count + 2-bit prescale
-    semantics: Arm a scheduler slot to drive pin to value at T+d. Non-blocking. Blocks only if both slots are busy.
-  - name: INAT
-    asm: "IN pin @T+d"
-    opcode: 2
-    operands: {pin: 4, d: 8}
-    semantics: Block until T+d, sample pin, shift into ISR. d = 0 reads the snapshot latched at the last matched edge.
-  - name: ADDT
-    opcode: 3
-    operands: {now: 1, d: 11}                    # now=1: T := counter + d; now=0: T := T + d
-    semantics: Move the time anchor without an edge. Generated timing is drift-free because T never depends on when the instruction ran.
-  - name: SHIFT
-    opcode: 4
-    operands: {dir: 1, n: 5, auto: 1}            # dir: 0 out (OSR), 1 in (ISR); auto: PULL/PUSH when the count reaches n
-    semantics: Shift OSR out or count ISR bits; optional automatic PULL or PUSH at n.
-  - name: PUSH
-    opcode: 5
-    operands: {block: 1}
-    semantics: ISR to RX FIFO; optionally block when full.
-  - name: PULL
-    opcode: 6
-    operands: {block: 1}
-    semantics: TX FIFO to OSR; optionally block when empty.
-  - name: SET
-    opcode: 7
-    operands: {target: 2, value: 10}             # target: 0 pin (value = pin:4 + level:1 + mode:1), 1 X, 2 Y
-    semantics: Immediate pin write (push-pull or open-drain release) or register load.
-  - name: JMP
-    opcode: 8
-    operands: {cond: 4, pin: 3, target: 5}       # cond: always, X--!=0, Y--!=0, pin high, pin low, TO, FIFO empty, FIFO full, slot busy
-    semantics: Conditional jump within the 32-word program.
-  - name: SYNC
-    opcode: 9
-    operands: {op: 1, flag: 2}                   # op: 0 set, 1 wait
-    semantics: Set or wait on one of four flags shared by the EMs and the host.
   - name: HALT
-    opcode: 15
-    operands: {}
-    semantics: Stop the EM and raise IRQ. Any undefined opcode behaves as HALT.
+    opcode: 0
+    asm: "HALT"
+    fields: {rsv: [11, 0]}
+    semantics: >-
+      Stop the EM and raise IRQ. Opcodes 12-15 execute as HALT. An all-zero program memory
+      therefore halts. So does any illegal operand: a pin number of 12-15, OUT or SET on an
+      input-only pin (8-11), a reserved WAIT mode or timeout, or a reserved JMP condition or flag.
+
+  - name: WAIT
+    opcode: 1
+    asm: "WAIT pin, mode [, timeout]"
+    fields:
+      pin:     [11, 8]
+      mode:    {bits: [7, 5], enum: {rise: 0, fall: 1, any: 2, high: 3, low: 4}}   # 5-7 reserved
+      timeout: [4, 0]          # 0 = none; n = 1..23 -> 2^n cycles after T; 24-31 reserved
+    semantics: >-
+      Block until the condition holds at some cycle e >= the cycle WAIT started. Edge modes match
+      only edges detected while WAIT is executing; level modes match immediately if the pin
+      already has the level. On a match: T := e, SNAPSHOT := all 12 pin levels at e.
+      With timeout n, the deadline is D = T + 2^n (using T as it was when WAIT started); at the
+      first cycle e where D is not in the future and no match occurs, TO := 1, T := D, and
+      execution continues. A match at the deadline cycle takes priority over the timeout.
+    asm_timeout: "written as the cycle count 2^n (e.g. 1024), which must be a power of two"
+
+  - name: OUT
+    opcode: 2
+    asm: "OUT pin, value @T+d"
+    fields:
+      pin:   [11, 8]
+      value: {bits: [7, 6], enum: {"0": 0, "1": 1, OSR: 2, "~OSR": 3}}
+      d:     [5, 0]            # 0..63 cycles, no prescale; longer delays use ADDT
+    semantics: >-
+      Arm a free scheduler slot to drive pin to the value at time T+d. Non-blocking when a slot
+      is free; if both slots are busy, block until one fires (a slot is free again in the cycle
+      it fires). value=OSR consumes exactly one OSR bit per execution: the bit is
+      OSR[OSR_COUNT] (LSB-first) or OSR[OUT_N-OSR_COUNT] (MSB-first, OUT_N stored minus 1),
+      then OSR_COUNT += 1. If the OSR is empty (OSR_COUNT == OUT_N+1, the word length) and AUTOPULL is set, a
+      blocking PULL happens first. If AUTOPULL is clear, the bit is 0, OSR_COUNT is unchanged,
+      and UNF := 1. value=~OSR drives the complement of the next OSR bit without consuming it.
+      Two slots firing for the same pin at the same time: the later-armed value wins.
+
+  - name: IN
+    opcode: 3
+    asm: "IN pin @T+d  |  IN pin @snap"
+    fields:
+      pin:  [11, 8]
+      snap: [7, 7]
+      rsv:  [6, 6]
+      d:    [5, 0]             # 0..63 cycles
+    semantics: >-
+      snap=1: read SNAPSHOT[pin] without blocking. snap=0: block until the counter reaches T+d,
+      then sample the pin. Either way the bit goes into the ISR: at ISR[ISR_COUNT] (IN_MSB=0)
+      or ISR[IN_N-ISR_COUNT] (IN_MSB=1), then ISR_COUNT += 1. When ISR_COUNT reaches IN_N+1
+      and AUTOPUSH is set, a blocking PUSH follows in the same instruction. If the ISR is
+      already full and AUTOPUSH is clear, the bit is dropped.
+
+  - name: ADDT
+    opcode: 4
+    asm: "ADDT d [, now]"
+    fields:
+      now: [11, 11]
+      d:   [10, 0]             # 0..2047 cycles
+    semantics: >-
+      now=0: T := T + d (mod 2^24).
+      now=1, at cycle c: if T_PASSED, T := c + d; else T := T if (T - (c + d)) mod 2^24 < 2^23,
+      otherwise c + d. That is T := max(T, c + d): the anchor never moves backwards, so a
+      re-anchor after idle cannot clip an edge already scheduled. With d >= 2 an OUT @T+0 on the
+      next cycle is never late.
+
+  - name: ADDTP
+    opcode: 5
+    asm: "ADDT P[/2|/4|/8] [, now]"
+    fields:
+      now:   [11, 11]
+      shift: [10, 9]           # delta = P >> shift
+      rsv:   [8, 0]
+    semantics: >-
+      As ADDT with delta = P >> shift (P, P/2, P/4, P/8, truncating). Firmware takes the bit
+      period from P and never hard-codes it. P is 16 bits, so one "ADDT P" step covers periods up
+      to 65,535 cycles (763 baud at 50 MHz). Slower rates set P to 1/k of the bit period and use k
+      "ADDT P" steps per bit: k = 2 reaches 381 baud, k = 3 reaches 254 baud
+      (300 baud at 50 MHz: P = 55,556, three steps = 166,668 cycles against an ideal 166,667).
+      Two "ADDT P/2" steps equal one "ADDT P" and do not extend the range.
+
+  - name: SHIFT
+    opcode: 6
+    asm: "SHIFT out|in, lsb|msb, n [, auto]"
+    fields:
+      dir:  {bits: [11, 11], enum: {out: 0, in: 1}}
+      msb:  {bits: [10, 10], enum: {lsb: 0, msb: 1}}
+      auto: [9, 9]
+      n:    [8, 5]             # word length minus 1: n = 1..16 bits
+      rsv:  [4, 0]
+    semantics: >-
+      Configuration only; moves no data. Writes the OUT_* (dir=out) or IN_* (dir=in) fields of
+      CFG: bit order, word length and threshold n, and AUTOPULL or AUTOPUSH. The same n is the
+      autopull or autopush threshold. For dir=out, sets OSR_COUNT := n (the word length, so the OSR
+      reads as empty); for dir=in, sets ISR := 0 and ISR_COUNT := 0.
+
+  - name: PUSH
+    opcode: 7
+    asm: "PUSH [block]"
+    fields: {rsv: [11, 1], block: [0, 0]}
+    semantics: >-
+      Move the ISR word to the RX FIFO: 1 byte (ISR[7:0]) if IN_N+1 <= 8, else 2 bytes, low byte
+      first. Then ISR := 0 and ISR_COUNT := 0. block=1 waits for room for the whole word;
+      block=0 with too little room drops the word, still clears the ISR, and sets OVF.
+
+  - name: PULL
+    opcode: 8
+    asm: "PULL [block]"
+    fields: {rsv: [11, 1], block: [0, 0]}
+    semantics: >-
+      Load a word from the TX FIFO into the OSR: 1 byte into OSR[7:0] (OSR[15:8] := 0) if
+      OUT_N+1 <= 8, else 2 bytes, the first into OSR[7:0] and the second into OSR[15:8].
+      OSR_COUNT := 0. block=1 waits for enough bytes; block=0 with too few leaves the OSR and
+      OSR_COUNT unchanged.
+
+  - name: SET
+    opcode: 9
+    asm: "SET pin, 0|1 [, pp|od]  |  SET X|Y|P, imm"
+    fields:
+      target: {bits: [11, 10], enum: {pin: 0, X: 1, Y: 2, P: 3}}
+      imm:    [9, 0]           # X, Y, P: 0..1023, zero-extended to 16 bits
+      pin:    [9, 6]           # target=pin only
+      level:  [5, 5]           # target=pin only
+      od:     [4, 4]           # target=pin only: 0 push-pull, 1 open-drain (stored in PIN_MODE)
+      rsv:    [3, 0]           # target=pin only
+    semantics: >-
+      target=pin: set PIN_MODE[pin] := od and drive the pin to level immediately (effective
+      cycle c+1). Open-drain level 1 releases the pin. target=X|Y|P: register := imm. The host
+      writes the full 16 bits of P through EMx_P.
+
+  - name: JMP
+    opcode: 10
+    asm: "JMP target  |  JMP cond, target  |  JMP HIGH|LOW pin, target"
+    fields:
+      cond:   {bits: [11, 9], enum: {flag: 0, "X--": 1, "Y--": 2, high: 3, low: 4}}  # 5-7 reserved
+      pin:    [8, 5]           # cond=high|low: the pin; cond=flag: the flag select below
+      target: [4, 0]
+    flags: {always: 0, TO: 1, LATE: 2, TXE: 3, "!OSRE": 4}       # 5-15 reserved
+    semantics: >-
+      cond=flag selects a condition through the pin field: always; TO (then clears TO); LATE
+      (sticky, not cleared); TXE (TX FIFO empty); !OSRE (OSR not empty, OSR_COUNT <= OUT_N).
+      X--: if X != 0 then X := X - 1 and jump, else fall through (SET X, 7 gives 8 passes).
+      Y-- likewise. high/low test the live filtered pin level at the executing cycle.
+
+  - name: SYNC
+    opcode: 11
+    asm: "SYNC set|wait, n"
+    fields:
+      rsv:  [11, 3]
+      op:   {bits: [2, 2], enum: {set: 0, wait: 1}}
+      flag: [1, 0]
+    semantics: >-
+      set: flag n := 1. wait: block until flag n is 1, then clear it in the completing cycle.
+      The host can read, set and clear all four flags.
