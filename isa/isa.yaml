@@ -50,6 +50,11 @@ state:
     UNF:  {doc: "OUT value=OSR with the OSR empty and AUTOPULL off. Sticky; host-cleared"}
   PIN_MODE:  {bits: 8, doc: "per bidirectional pin: 0 push-pull, 1 open-drain. Written by SET pin"}
 
+# Reset state of each EM: PC = 0, T = counter (so T_PASSED = 1), X = Y = P = 0, all flags 0,
+# CFG = OUT and IN LSB-first with 8-bit words and no autopull/autopush, OSR empty, ISR empty,
+# PIN_MODE = push-pull, both slots free, both FIFOs empty. The host may write P and CFG
+# before starting an EM.
+
 # Shared (not per EM): the 24-bit counter, the four SYNC flags, the pin drivers.
 # Pin drive after reset: every B pin undriven (input). Push-pull drive = level with output enabled.
 # Open-drain drive: level 0 pulls low, level 1 releases (output disabled).

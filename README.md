@@ -22,7 +22,7 @@ The RP2040's PIO is cycle-exact, but its timing is relative to its own instructi
 2. `IN pin @ T+d`: hardware samples the pin at a computed future time, so a mid-bit read is one instruction.
 3. Edge-latched snapshot: all 12 watchable pins are latched as they stood at the matched edge, so a slave reads data at the clock edge, not several cycles later.
 
-Two Event Machines, 16-bit instructions, 32 words each. UART, SPI master and slave, and I2C master each fit in 12 words or fewer.
+Two Event Machines, 16-bit instructions, 32 words each. Measured on the simulator: UART transmit is 12 words, UART receive 17, SPI master 19 and I2C master 32.
 
 ## The Ear: identify, flag, learn
 

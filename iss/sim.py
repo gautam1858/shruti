@@ -151,6 +151,7 @@ class Sim:
         initial: Optional[Dict[int, int]] = None,
         latency: int = 2,
         P: Optional[Sequence[int]] = None,
+        cfg: Optional[Sequence[Dict[str, int]]] = None,
         host_tx: Sequence[Iterable[Tuple[int, int]]] = (),
         host_sync: Iterable[Tuple[int, int, int]] = (),
         rx_drain: bool = True,
@@ -182,6 +183,12 @@ class Sim:
             em.T = self.counter(0)
             if P is not None:
                 em.P = P[i] & 0xFFFF
+            if cfg is not None and cfg[i]:          # host writes to EMx_CFG before start
+                for k, v in cfg[i].items():
+                    if k not in ("OUT_MSB", "OUT_N", "AUTOPULL", "IN_MSB", "IN_N", "AUTOPUSH"):
+                        raise ProgramError(f"{k} is not a CFG field")
+                    setattr(em, k, v)
+                em.OSR_COUNT = em.out_w
             self.ems.append(em)
         self.decoded = [[self.isa.decode(w, strict) for w in em.program] for em in self.ems]
 
@@ -649,4 +656,6 @@ def simulate(program: Sequence[int], cycles: int, **kw) -> Result:
         kw["host_tx"] = [kw["host_tx"]]
     if "P" in kw and isinstance(kw["P"], int):
         kw["P"] = [kw["P"]]
+    if "cfg" in kw and isinstance(kw["cfg"], dict):
+        kw["cfg"] = [kw["cfg"]]
     return Sim([program], **kw).run(cycles)
