@@ -155,6 +155,8 @@ class Sim:
         host_tx: Sequence[Iterable[Tuple[int, int]]] = (),
         host_sync: Iterable[Tuple[int, int, int]] = (),
         rx_drain: bool = True,
+        host_tx_drop: bool = False,
+        host_rx_pop: Iterable[Tuple[int, int]] = (),
         devices: Iterable[Device] = (),
         counter_offset: int = 0,
         strict: bool = True,
@@ -218,6 +220,9 @@ class Sim:
         self.host_tx = self.host_tx[: len(self.ems)]
         self.host_sync = sorted(host_sync, key=lambda e: e[0])  # (cycle, flag, value)
         self.rx_drain = rx_drain
+        self.host_tx_drop = host_tx_drop     # a byte written to a full TX FIFO is lost (as on
+                                             # the chip's SPI port) instead of waiting
+        self.host_rx_pop = sorted(host_rx_pop)   # (cycle, em): the host reads one RX byte
         self.host_rx: List[List[int]] = [[] for _ in self.ems]
         self.sync = [0] * self.isa.sync_flags
         self._arm_seq = 0
@@ -294,11 +299,20 @@ class Sim:
             self.sync[f] = v
         for i, em in enumerate(self.ems):
             q = self.host_tx[i]
-            while q and q[0][0] <= c and len(em.tx) < self.isa.fifo_depth:
-                em.tx.append(q.pop(0)[1] & 0xFF)
+            while q and q[0][0] <= c:
+                if len(em.tx) < self.isa.fifo_depth:
+                    em.tx.append(q.pop(0)[1] & 0xFF)
+                elif self.host_tx_drop:
+                    q.pop(0)
+                else:
+                    break
             if self.rx_drain and em.rx:
                 self.host_rx[i].extend(em.rx)
                 em.rx.clear()
+        while self.host_rx_pop and self.host_rx_pop[0][0] <= c:
+            _, i = self.host_rx_pop.pop(0)
+            if self.ems[i].rx:
+                self.host_rx[i].append(self.ems[i].rx.pop(0))
         # 4. devices
         for d in self.devices:
             d.on_cycle(c)
@@ -332,12 +346,14 @@ class Sim:
                     if v is not None and v > c:
                         cands.append(v)
             q = self.host_tx[i]
-            if q and len(em.tx) < self.isa.fifo_depth:     # room only appears when the EM pulls
-                cands.append(max(q[0][0], c + 1))
+            if q and (len(em.tx) < self.isa.fifo_depth or self.host_tx_drop):
+                cands.append(max(q[0][0], c + 1))      # else room only appears when the EM pulls
             if self.rx_drain and em.rx:
                 cands.append(c + 1)
         if self.host_sync:
             cands.append(max(self.host_sync[0][0], c + 1))
+        if self.host_rx_pop:
+            cands.append(max(self.host_rx_pop[0][0], c + 1))
         for d in self.devices:
             n = d.next_event(c)
             if n is not None:

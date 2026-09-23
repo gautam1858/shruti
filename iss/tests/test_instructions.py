@@ -424,3 +424,26 @@ def test_em1_wins_pin_conflict():
     em1 = [ADDT(20), OUT(0, 1), HALT()]
     res = Sim([em0, em1], initial={0: 0}).run(100)
     assert res.pin_trace(0) == [(20, 1)]
+
+
+def test_host_tx_drop_mode_loses_bytes_written_to_a_full_fifo():
+    # The chip's SPI port drops a byte written to a full TX FIFO; host_tx_drop models that.
+    # The EM pulls one byte at cycle 3. Host writes land before the EM runs, so a write at
+    # cycle 3 still finds the FIFO full and is lost; one at cycle 4 fits.
+    from asm import assemble
+    prog = assemble("SET X, 1\nw: JMP X--, w\nPULL\nHALT")
+    tx = [(0, b) for b in (1, 2, 3, 4)]
+    kept = Sim([prog], host_tx=[tx + [(1, 5), (3, 6), (4, 7)]], host_tx_drop=True,
+               rx_drain=False).run(20)
+    assert kept.ems[0].OSR == 1 and kept.ems[0].tx == [2, 3, 4, 7]
+    waited = Sim([prog], host_tx=[tx + [(1, 5)]], rx_drain=False).run(20)
+    assert waited.ems[0].tx == [2, 3, 4, 5]
+
+
+def test_host_rx_pop_reads_one_byte_at_a_time():
+    # PUSH at cycle 2 queues 1 and PUSH at cycle 5 queues 3. Host pops land before the EM
+    # runs: the one at 3 takes the 1, the one at 5 finds the FIFO empty, the one at 6 takes 3.
+    from asm import assemble
+    prog = assemble("WAIT M0, high\nIN M0 @snap\nPUSH\nIN M0 @snap\nIN M0 @snap\nPUSH\nHALT")
+    res = Sim([prog], rx_drain=False, host_rx_pop=[(3, 0), (5, 0), (6, 0)]).run(20)
+    assert res.host_rx[0] == [1, 3] and res.ems[0].rx == []
