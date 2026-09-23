@@ -55,32 +55,37 @@ module tt_um_gautam1858_shruti (
   end
 
   // ------------------------------------------------------------------ input path
-  // Two-flop synchroniser, a five-deep history and a selectable majority filter per pin.
+  // Two-flop synchroniser, a sample history and a selectable majority filter per pin.
   // Bypass: a change on the pad in cycle e is seen by the Event Machines in cycle e + 2.
+  // The filter output is computed one cycle ahead from the earlier pipeline stages and
+  // registered, so the Event Machines read the filtered pins straight from flip-flops;
+  // filt_d holds exactly what a combinational filter on sync2 and hist0-4 would give.
   reg  [1:0]  filt_mode;
   wire [11:0] raw = {ui_in[7:4], uio_in};
-  reg  [11:0] sync1, sync2, hist0, hist1, hist2, hist3, hist4, filt_q;
-  wire [11:0] filt_d;
+  reg  [11:0] sync1, sync2, hist0, hist1, hist2, hist3, filt_d, filt_q;
+  wire [11:0] filt_next;
 
   genvar i;
   generate
     for (i = 0; i < 12; i = i + 1) begin : g_pin
-      wire [2:0] cnt3 = {2'b00, hist0[i]} + {2'b00, hist1[i]} + {2'b00, hist2[i]};
-      wire [2:0] cnt5 = cnt3 + {2'b00, hist3[i]} + {2'b00, hist4[i]};
-      assign filt_d[i] = (filt_mode == 2'b00) ? sync2[i]        :  // bypass
-                         (filt_mode == 2'b01) ? (cnt3 >= 3'd2)  :  // 2-of-3 majority
-                                                (cnt5 >= 3'd3);    // 3-of-5 majority
+      // next cycle's hist0..hist4 are this cycle's sync2, hist0..hist3
+      wire [2:0] cnt3 = {2'b00, sync2[i]} + {2'b00, hist0[i]} + {2'b00, hist1[i]};
+      wire [2:0] cnt5 = cnt3 + {2'b00, hist2[i]} + {2'b00, hist3[i]};
+      assign filt_next[i] = (filt_mode == 2'b00) ? sync1[i]        :  // bypass
+                            (filt_mode == 2'b01) ? (cnt3 >= 3'd2)  :  // 2-of-3 majority
+                                                   (cnt5 >= 3'd3);    // 3-of-5 majority
     end
   endgenerate
 
   always @(posedge clk) begin
     if (!rst_n) begin
       sync1 <= 12'd0; sync2 <= 12'd0;
-      hist0 <= 12'd0; hist1 <= 12'd0; hist2 <= 12'd0; hist3 <= 12'd0; hist4 <= 12'd0;
-      filt_q <= 12'd0;
+      hist0 <= 12'd0; hist1 <= 12'd0; hist2 <= 12'd0; hist3 <= 12'd0;
+      filt_d <= 12'd0; filt_q <= 12'd0;
     end else begin
       sync1 <= raw;   sync2 <= sync1;
-      hist0 <= sync2; hist1 <= hist0; hist2 <= hist1; hist3 <= hist2; hist4 <= hist3;
+      hist0 <= sync2; hist1 <= hist0; hist2 <= hist1; hist3 <= hist2;
+      filt_d <= filt_next;
       filt_q <= filt_d;
     end
   end

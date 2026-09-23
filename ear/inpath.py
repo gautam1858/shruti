@@ -1,13 +1,14 @@
 """Bit-exact model of the input path in src/project.v: two-flop synchroniser, per-pin glitch
 filter (bypass, 2-of-3 or 3-of-5 majority) and edge detector.
 
-Timing convention (matches the RTL register by register): u[n] is the pin level during cycle
-n, i.e. the value sampled at the clock edge that ends cycle n. Then
+Timing convention (matches the RTL cycle by cycle): u[n] is the pin level during cycle n,
+i.e. the value sampled at the clock edge that ends cycle n. The RTL computes filt_d one
+cycle ahead and registers it, which gives the same values as the combinational form here:
     sync2[n] = u[n-2]            hist_k[n] = u[n-3-k]   (k = 0..4)
     filt_d[n] = u[n-2]                          (bypass)
               = majority(u[n-3], u[n-4], u[n-5])  (2-of-3)
               = 3-of-5 of u[n-3] .. u[n-7]        (3-of-5)
-    strobe[n] = filt_d[n-1] xor filt_d[n-2]     (uo_out, one cycle per filtered edge)
+    strobe[n] = filt_d[n-1] xor filt_d[n-2]     (one cycle per filtered edge; milestone 0 put it on uo_out)
 A clean edge at cycle e is therefore seen by filt_d at e + 2, e + 4 or e + 5 depending on the
 mode. Pure Python, no dependencies.
 """
