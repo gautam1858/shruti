@@ -52,16 +52,22 @@ Alongside proof-carrying firmware, the distinctive claim is a formal proof in Sy
 
 ## Status
 
-Spec v1.0: 23 Sep 2026, with the ISA reconciled to v1.1 (`docs/isa-decisions.md`). Milestone 0 in `src/`: synchronisers, selectable glitch filter and edge strobes, through the CMOS5L flow.
+Spec v1.0: 23 Sep 2026, with the ISA reconciled to v1.1 (`docs/isa-decisions.md`). RTL in Verilog.
 
-Working today, all in Python, with tests (`python -m pytest`):
+In silicon-ready RTL (`src/`), tested in cocotb (`cd test && make`):
+- both Event Machines, the 24-bit timestamp counter, the 12-pin input path with its glitch filter, the pin drivers and the host SPI (`docs/host-interface.md`);
+- checked against the ISS cycle for cycle: 60 random two-EM programs with random pin stimulus and host traffic match in every register, FIFO and pin, every cycle;
+- the UART transmit firmware sends bytes out of pin B0, loaded and started over SPI;
+- first synthesis on the CMOS5L cells: 10,090 cells, about 20% of the 6x4 core (`synth/synth.sh`; spec section 8).
+
+In Python, with tests (`python -m pytest`):
 - the cycle-accurate ISS (`iss/`), generated from `isa/isa.yaml`;
 - the assembler and disassembler (`asm/`), round-trip checked over all 65,536 words;
 - firmware (`fw/`), each tested against a model of the peer device: UART transmit and receive, SPI master and slave, I2C master;
 - `shruti prove` (`prove/`): contracts proved for UART transmit (any number of frames), UART receive, SPI master and I2C master, with counterexamples replayed on the ISS where a peer model exists;
 - the Ear (`ear/`): a bit-exact reference checked against the RTL's input path, a protocol simulator, and a first trained model (`ear/REPORT.md`, simulated buses only).
 
-Next: RTL for the Event Machines once the language is chosen (11 Oct), the Ear RTL, then integration (29 Nov), FPGA bring-up in December, feature freeze 20 Dec and submission 12 Jan 2027. Built in public in this repo.
+Next: place-and-route timing at 50 MHz for the Event Machines, the Ear and Watch RTL, then integration (29 Nov), FPGA bring-up in December, feature freeze 20 Dec and submission 12 Jan 2027. Built in public in this repo.
 
 ## Repository layout
 
@@ -77,6 +83,7 @@ Next: RTL for the Event Machines once the language is chosen (11 Oct), the Ear R
 | `verify/` | cocotb bus models, formal properties (SymbiYosys), differential test harness |
 | `fpga/` | Tang Nano 20K prototype |
 | `src/`, `test/` | Tiny Tapeout RTL and cocotb tests (what the GDS and test actions build) |
+| `synth/` | Early Yosys synthesis onto the CMOS5L cells |
 
 ## Build and test
 

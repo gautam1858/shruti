@@ -26,7 +26,7 @@ Every stated requirement in the [Jane Street brief](https://blog.janestreet.com/
 | Novel design and verification methodology | Proof-carrying firmware, every protocol program proven against its contract before it can be loaded (section 10); golden-model differential testing, formal proofs on the scheduler, and a bit-exact formal equivalence proof of the on-die classifier (section 9) |
 | IHP 130nm CMOS5L, Tiny Tapeout template, 6x4 tiles | Budget in section 8 targets 60% utilisation of 24 tiles; an 8x4 grant adds a third EM or doubles program memory |
 | Open source | Apache-2.0 for RTL, firmware, models and the training pipeline; public repo from day one |
-| Teams recommended | Two roles: microarchitecture + physical design; ISA, toolchain, Ear, verification and write-up |
+| Teams recommended | Planned as two roles (microarchitecture + physical design; ISA, toolchain, Ear, verification and write-up); decided 23 Sep 2026 to proceed solo, with the no-partner fallback in section 14 |
 | Deadline 18 Jan 2027, March 2027 shuttle | Feature freeze 20 Dec 2026, submission 12 Jan 2027 (section 15) |
 
 ## Architecture overview
@@ -141,7 +141,7 @@ Twelve watchable bus pins, a 3-wire host SPI, and five status outputs use all 24
 | Signal | Use |
 | --- | --- |
 | uio[7:0] | Bus pins B0-B7, bidirectional. Per-pin push-pull or open-drain mode (OUT value 1 releases the pin), which is how I2C and 1-Wire drive without extra logic |
-| ui_in[0..2] | Host SPI: SCK, MOSI, CS_n (mode 0, up to core clock / 4 = 12.5 MHz) |
+| ui_in[0..2] | Host SPI: SCK, MOSI, CS_n (mode 0, up to core clock / 8 = 6.25 MHz; v1.0 said / 4, which a slave that synchronises SCK into the core clock cannot meet) |
 | ui_in[3] | Trigger-in from a scope or another Shruti |
 | ui_in[4..7] | Monitor-only bus pins M0-M3; EMs can WAIT and IN on them, the Ear and monitors can watch them |
 | uo_out[0] | Host SPI MISO |
@@ -150,7 +150,7 @@ Twelve watchable bus pins, a 3-wire host SPI, and five status outputs use all 24
 | uo_out[4..6] | Ear class, 3 bits, straight to the demo board LEDs |
 | uo_out[7] | Ear OOD flag |
 
-Register map over SPI (8-bit command, 8-bit address, data): PROG0 and PROG1 (32 x 16 bits each), WEIGHTS (1,344 bits), FEATURES (72 bytes, read), RECORDER (32 x 21 bits, read), MON0-3 config, EAR config (4-pin select, margin, floor, window length), EM control (run, halt, reset, PC), EMx_P bit period and EMx_CFG shift configuration, TX and RX FIFOs (4 deep per EM), STATUS (including the sticky LATE, OVF and UNF flags per EM). Every bit of program, weights and configuration is host-loaded; nothing protocol-specific is fixed in silicon.
+Register map over SPI (8-bit command, 8-bit address, data; the part built so far, with its timing, is in docs/host-interface.md): PROG0 and PROG1 (32 x 16 bits each), WEIGHTS (1,344 bits), FEATURES (72 bytes, read), RECORDER (32 x 21 bits, read), MON0-3 config, EAR config (4-pin select, margin, floor, window length), EM control (run, halt, reset, PC), EMx_P bit period and EMx_CFG shift configuration, TX and RX FIFOs (4 deep per EM), STATUS (including the sticky LATE, OVF and UNF flags per EM). Every bit of program, weights and configuration is host-loaded; nothing protocol-specific is fixed in silicon.
 
 Electrical: logic levels are whatever the Tiny Tapeout board provides (confirm 3.3 V in week one). I2C uses open-drain mode with external pull-ups; low-speed USB needs the external 1.5 kohm pull-up on D- and a level check, proven on the FPGA before it is claimed.
 
@@ -177,6 +177,10 @@ The design holds about 5,000 bits of state (the table's sum; v1.0 of this text s
 | **Total** | **~5,000** | **10,900** | 14,400 usable at 6x4; ~18,000 at 8x4 |
 
 SRAM decision rule: use one SRAM macro for program, weights and recorder only if a single macro of at least 4 kbit fits in 3 tiles or fewer including its keep-out, checked against the CMOS5L template and the ttihp0p2 SRAM example in week one. Otherwise stay with flip-flops: a first tapeout with no macro carries no LEF, timing-model or placement risk, and the budget above already fits without one.
+
+SRAM check, 23 Sep 2026. The CMOS5L PDK (IHP-Open-PDK at the revision the Tiny Tapeout flow pins) links its SRAM library to the SG13G2 macros, so the ttihp0p2 macros are available. The smallest, RM_IHPSG13_1P_64x16_c2 (1 kbit, one port), is 236.8 x 64.4 um = 15,240 um2; the 16 kbit 1024x16 is 236.8 x 336.5 um, about 2.1 tiles. Read access (clock to data out) is about 5 ns at the slow corner, a quarter of a 20 ns cycle. The rule's premise is wrong, though: one single-port macro cannot serve two EMs fetching an instruction every cycle, the Ear reading a weight every cycle during inference and the recorder writing at the same time, so "one macro for everything" would stall the EMs. The workable form is one 64x16 macro per EM (which also doubles program memory to 64 words), about 30,500 um2 plus keep-out, against 83,900 um2 (2,921 cells, measured) for today's 2 x 32 x 16 flops with their write enables and read muxes. The saving, about 50,000 um2 or 5 to 6% of the core, is not needed at the measured utilisation below, and a macro needs changes to src/config.json and a synchronous-read fetch. Decision: stay with flip-flops; revisit only if placement or routing runs short. The flop memory sits behind one read port per EM, so the swap stays local if it is ever made.
+
+Measured, 23 Sep 2026 (synth/synth.sh: Yosys mapping onto the CMOS5L cells, before placement). The 6x4 die in the Tiny Tapeout flow is 1,289.3 x 710.6 um = 0.92 mm2 (core 0.90 mm2), more than the brief's estimate of 0.7 mm2. Built so far: two EMs, flop program memory, input path, counter, pin drivers, SYNC and the host SPI with its register map, 10,090 cells and 179,000 um2 of cell area, of which 1,826 flip-flops are half. That is about 20% of the core. Per block: one EM 2,872 cells (39,300 um2); host SPI 244 cells (4,400 um2); program memory, input path and register map 3,826 cells (97,300 um2). Against the table above, these blocks came in about 65% over their cell estimates (program memory 2,921 cells, not 1,600; each EM 2,872, not 1,350). The rest of the design, at the same overrun, would bring the total to roughly 18,000 cells and 330,000 um2, about 37% of the core. So the cell-count budget in this section, 1,000 cells per tile, is about half what the measured die holds (average cell 17.8 um2, 60% target density: roughly 30,000 cells). The binding limits are placed density, routing and timing at 50 MHz, not the cell count, and the checkpoint criteria below use them. The GDS action's placed and routed numbers replace these as each block lands.
 
 If the 8x4 grant arrives: add a third EM (2,400 cells) or double program memory to 64 words per EM (1,600 cells), not both, and keep utilisation under 65%.
 
@@ -221,6 +225,8 @@ Receive: DDR capture samples each pin on both clock edges (two flops and a mux p
 
 ## Toolchain decision: Hardcaml or Verilog
 
+Decided 23 Sep 2026: Verilog, solo. The Event Machines, host SPI and pin drivers are in `src/` and match the ISS cycle for cycle in cocotb (test/test.py). The reasoning below is kept as it was written.
+
 Decide at the partner meeting on 11 Oct: RTL in Hardcaml if the RTL owner will work in OCaml, otherwise Verilog. The ISS, assembler, prover and Ear pipeline stay in Python either way, and the ISS is the single source of truth: instruction encodings are generated from one table for the ISS, the assembler and the RTL, so the two languages cannot drift.
 
 Why Hardcaml: the judges built it. hardcaml_waveterm expect tests (the ASCII waveforms featured on their blog) and hardcaml_verify (SAT-based bounded checks) are the tools they read fluently, and Hardcaml generates the Verilog the Tiny Tapeout flow needs, so nothing changes downstream. An entry written in their language and tested in their idiom will be read more carefully than one that is not.
@@ -253,7 +259,7 @@ The two risks that decide the outcome are area after synthesis and the Ear gener
 | Ear misclassifies real devices | Confusion matrix below 90% on FPGA captures (on simulated buses the first model reaches 86.6%, weakest on UART) | Fine-tune on FPGA captures; if still weak, ship the Ear as beta and keep features plus bit-period reporting, which are useful alone |
 | OOD flag noisy or blind | False alarms above 5% on known classes; or unknown protocols not flagged (first simulated check: 7.5% false alarms, and only 0.2% of held-out JTAG/SWD and PS/2 windows flagged, so the logit floor alone does not work) | Try a distance-to-class-prototype test on the hidden layer; label it "unknown" rather than "anomaly"; publish the rates |
 | CMOS5L template or flow problems (new branch) | Counter does not reach GDS in week 1 | Email asic-competition@janestreet.com and the Tiny Tapeout Discord in week 1, not week 10 |
-| No partner by 11 Oct | | Single-EM scope, no USB, Ear kept |
+| No partner by 11 Oct | Decided 23 Sep: solo | No USB, Ear kept. The single-EM cut is not taken: both EMs are already built and verified, and they use about 9% of the core |
 | Electrical unknowns on the demo board (open-drain, USB pull-ups) | | Prove on the FPGA; claim only what ran |
 | Time, alongside the day job and other ventures | A missed checkpoint | Cut scope at the checkpoint, never the timeline |
 
@@ -265,16 +271,16 @@ Submission is targeted for 12 Jan 2027, six days before the 18 Jan 2027 deadline
 
 | Date | Milestone | Owner | Status |
 | --- | --- | --- | --- |
-| 4 Oct 2026 | Counter through the CMOS5L template to GDS; logic level, SRAM macro and I/O speed questions answered; Tang Nano 20K and test devices ordered | Gautam | Tiles checked: the CMOS5L precheck tables list 6x4 and 8x4. First CI runs on main failed before any step ran; not yet diagnosed |
-| 11 Oct 2026 | Partner decision; Hardcaml or Verilog decided; core clock chosen (40, 50 or 60 MHz); ISA v1 frozen (this doc) | Gautam | ISA v1.1 reconciled (docs/isa-decisions.md); freeze pending |
-| 25 Oct 2026 | ISS, assembler and disassembler; UART, SPI and I2C firmware passing on the ISS; protocol simulator emitting edge streams for training; shruti prove v0 proves the UART transmit contract with symbolic data and bit period | Gautam | ISS, assembler and firmware (UART TX/RX, SPI master, I2C master) done and tested on the ISS; shruti prove v0 proves the UART TX contract for P = 8..65,535, all bytes and arrival times, in about 0.5 s; protocol simulator pending |
-| 8 Nov 2026 | EM0 RTL passes differential tests against the ISS; first measured synthesis cell count | Partner |  |
+| 4 Oct 2026 | Counter through the CMOS5L template to GDS; logic level, SRAM macro and I/O speed questions answered; Tang Nano 20K and test devices ordered | Gautam | Input path through GDS, precheck and gate-level test on the CMOS5L flow (the early CI failures were billing on a private repo). SRAM checked (section 8). Logic level, I/O speed and ordering pending |
+| 11 Oct 2026 | Partner decision; Hardcaml or Verilog decided; core clock chosen (40, 50 or 60 MHz); ISA v1 frozen (this doc) | Gautam | Solo and Verilog, decided 23 Sep. ISA v1.1 reconciled (docs/isa-decisions.md); clock and freeze pending |
+| 25 Oct 2026 | ISS, assembler and disassembler; UART, SPI and I2C firmware passing on the ISS; protocol simulator emitting edge streams for training; shruti prove v0 proves the UART transmit contract with symbolic data and bit period | Gautam | ISS, assembler and firmware (UART TX/RX, SPI master, I2C master) done and tested on the ISS; shruti prove v0 proves the UART TX contract for P = 8..65,535, all bytes and arrival times, in about 0.5 s; protocol simulator done (ear/protosim.py) |
+| 8 Nov 2026 | EM0 RTL passes differential tests against the ISS; first measured synthesis cell count | Gautam | Done early (23 Sep): both EMs, host SPI and pin drivers match the ISS in every register every cycle over 60 random programs; fw/uart_tx.s sends bytes out of B0; first synthesis 10,090 cells, about 20% of the core (section 8). Place-and-route timing pending |
 | 15 Nov 2026 | Feature extractor RTL with bit-exact reference; first Ear model trained on synthetic data, weights loading over SPI | Gautam | Bit-exact reference done (input path checked against the RTL); first model trained on simulated buses: 86.6% test accuracy for the integer model, 99.5% when confident; the OOD flag failed its held-out-class check (ear/REPORT.md). RTL pending |
-| 29 Nov 2026 | Checkpoint: both EMs, host SPI, monitors, recorder and Ear integrated; UART, SPI and I2C pass protocol tests and their contracts are proven; cell count under 13,000 or the cut list applies | Both | Contracts proven: UART TX (any number of frames), UART RX, SPI master, I2C master (one transaction) |
-| 6 Dec 2026 | FPGA bring-up against a USB-UART adapter, SPI flash and I2C sensor; capture dataset started; Ethernet link pulses light a switch LED if the serializer is in | Partner |  |
+| 29 Nov 2026 | Checkpoint: both EMs, host SPI, monitors, recorder and Ear integrated; UART, SPI and I2C pass protocol tests and their contracts are proven; placed density under the flow's 60% target and timing met at 50 MHz, or the cut list applies (v1.0 said a cell count under 13,000, which section 8's measurements show is about half the real capacity) | Gautam | Contracts proven: UART TX (any number of frames), UART RX, SPI master, I2C master (one transaction) |
+| 6 Dec 2026 | FPGA bring-up against a USB-UART adapter, SPI flash and I2C sensor; capture dataset started; Ethernet link pulses light a switch LED if the serializer is in | Gautam |  |
 | 13 Dec 2026 | Formal suite closes, classifier proof included; Ear fine-tuned on FPGA captures; confusion matrix and OOD numbers recorded | Gautam |  |
 | 20 Dec 2026 | Feature freeze; low-speed USB, Ethernet frame transmit and the LLM-written, prover-accepted PS/2 firmware demo count only if already passing | Both |  |
-| 4 Jan 2027 | Place-and-route, timing signoff at 50 MHz, gate-level simulation of key tests | Partner |  |
+| 4 Jan 2027 | Place-and-route, timing signoff at 50 MHz, gate-level simulation of key tests | Gautam |  |
 | 12 Jan 2027 | Submission: README, ISA reference, verification report with bugs-per-method table, demo video | Gautam |  |
 | 18 Jan 2027 | Jane Street deadline (buffer) | |  |
 
@@ -284,10 +290,10 @@ Eight facts this spec assumes but has not verified; each changes a number above,
 
 - [ ] Maximum core clock and pin toggle rate on the CMOS5L Tiny Tapeout board: decides 50 MHz vs 24 MHz and whether low-speed USB is claimable
 - [ ] Logic level of the board's I/O (assumed 3.3 V) and whether uio pins can be tri-stated per pin at runtime, which open-drain mode needs
-- [ ] SRAM macro sizes and area on CMOS5L, from the template and the ttihp0p2 SRAM example: feeds the SRAM rule in section 8
+- [x] SRAM macro sizes and area on CMOS5L, from the template and the ttihp0p2 SRAM example: feeds the SRAM rule in section 8 (answered 23 Sep: stay with flops, section 8)
 - [ ] Whether the 8x4 tile option is confirmed, and by when: decides the third EM vs 64-word memory choice
-- [ ] Which flow version the cmos5l template branch runs (LibreLane or OpenLane) and whether the GDS GitHub Action works on a fork today
-- [ ] Partner: who owns microarchitecture and physical design, whether they will write it in Hardcaml, and by 11 Oct
+- [x] Which flow version the cmos5l template branch runs (LibreLane or OpenLane) and whether the GDS GitHub Action works on a fork today (LibreLane 3.1.0.dev3; the GDS, precheck and gate-level jobs pass on this repo)
+- [x] Partner: who owns microarchitecture and physical design, whether they will write it in Hardcaml, and by 11 Oct (solo, Verilog, decided 23 Sep)
 - [ ] Final 8 Ear classes: UART, SPI, I2C, low-speed USB, CAN, JTAG/SWD, PS/2, Manchester, or swap CAN for 1-Wire
 - [ ] Name and licence: check "Shruti" for collisions with existing chips or tools; Apache-2.0 for everything, or CERN-OHL-P for the RTL
 

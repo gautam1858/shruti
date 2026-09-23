@@ -4,11 +4,11 @@ Shruti is a protocol emulator that also listens. One hardware stream of filtered
 
 Every protocol program ships with a machine-checked proof that it meets its timing contract. The full design is described in `docs/architecture-spec.md`.
 
-Milestone 0 (this revision of the RTL) is the front of the event stream only: a two-flop synchroniser, a per-pin glitch filter with a selectable depth (bypass, 2-of-3 or 3-of-5 majority) and an edge detector on the eight bus pins.
+This revision of the RTL (milestone 1) has both Event Machines, the 24-bit timestamp counter, the input path (two-flop synchroniser and a glitch filter with a selectable depth: bypass, 2-of-3 or 3-of-5 majority) on all 12 watchable pins, the pin drivers with per-pin open-drain mode, and the host SPI. Watch and the Ear come next; their outputs read 0.
 
 ## How to test
 
-Milestone 0: set `ui[1:0]` to the filter mode (`00` bypass, `01` 2-of-3, `10` 3-of-5), drive edges on `uio[7:0]`, and watch `uo[7:0]`: each bus pin gives a one-cycle strobe on `uo` for every filtered edge. A one-cycle glitch produces two strobes in bypass mode and none in 3-of-5 mode. `test/test.py` checks exactly this with cocotb.
+Connect an SPI master (mode 0, SCK at most the core clock / 8) to `ui[0]` SCK, `ui[1]` MOSI, `ui[2]` CS_n and `uo[0]` MISO. A transaction is a command byte (`0x00` write, `0x80` read), an address byte and data bytes; `docs/host-interface.md` has the register map. To send UART bytes on `uio[0]`: write the 12 words of `fw/uart_tx.s` to program addresses 0x00-0x17 (low byte first), the bit period in core cycles to 0x82-0x83 (e.g. 434 for 115200 baud at 50 MHz), the bytes to the TX FIFO at 0x86, and 1 to 0x80 to start. `uo[1]` goes high if an Event Machine halts. `test/test.py` does exactly this in cocotb and checks the pin against the instruction-set simulator cycle for cycle.
 
 Final design: the demo board's RP2040 acts as host over the 3-wire SPI on `ui[2:0]` and `uo[0]`, loads the Event Machine programs and the Ear's weights, and reads back features and the flight recorder. The identified protocol class appears on `uo[6:4]`, so the on-board LEDs show it with no host software.
 
