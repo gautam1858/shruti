@@ -215,6 +215,11 @@ instructions:
       level:  [5, 5]           # target=pin only
       od:     [4, 4]           # target=pin only: 0 push-pull, 1 open-drain (stored in PIN_MODE)
       rsv:    [3, 0]           # target=pin only
+    variants:                  # which fields apply for each target (they share bits 9..0)
+      pin: [pin, level, od, rsv]
+      X: [imm]
+      Y: [imm]
+      P: [imm]
     semantics: >-
       target=pin: set PIN_MODE[pin] := od and drive the pin to level immediately (effective
       cycle c+1). Open-drain level 1 releases the pin. target=X|Y|P: register := imm. The host
