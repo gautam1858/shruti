@@ -38,11 +38,17 @@ def main(argv=None) -> int:
         cpath = Path(a.contract) if a.contract else contract_for(a.program)
         import yaml
         kind = (yaml.safe_load(cpath.read_text()) or {}).get("kind")
-        if kind in ("receiver", "spi_master"):
+        if kind in ("receiver", "spi_master", "i2c_master"):
             if kind == "receiver":
                 from prove.reactive import load_receiver as load_k, prove_receiver as prove_k
-            else:
+            elif kind == "spi_master":
                 from prove.spi import load_spi as load_k, prove_spi as prove_k
+            else:
+                from prove.i2c import load_i2c, prove_i2c
+                out = prove_i2c(load_i2c(cpath), Path(a.program).read_text())
+                print(f"{a.program} against {cpath}:")
+                print(out.report())
+                return 0 if out.proved else 1
             out = prove_k(load_k(cpath), assemble(Path(a.program).read_text(), a.program))
             print(f"{a.program} against {cpath}:")
             print(out.report())

@@ -52,6 +52,7 @@ class Event:
     level: z3.BoolRef
     key: Tuple[int, int]
     pc: int                                    # instruction that produced it (-1: initial)
+    od: bool = False                           # open-drain: level True releases the pin
 
 
 @dataclass
@@ -81,6 +82,23 @@ class Wave:
         for tt, v in zip(self.times, self.levels):
             lvl = z3.If(tt <= t, v, lvl)
         return lvl
+
+    def boundaries(self) -> List[z3.ArithRef]:
+        return list(self.times)
+
+
+@dataclass
+class AndSignal:
+    """Wired-AND of two signals (an open-drain line driven by two devices)."""
+
+    a: object
+    b: object
+
+    def level_at(self, t) -> z3.BoolRef:
+        return z3.And(self.a.level_at(t), self.b.level_at(t))
+
+    def boundaries(self) -> List[z3.ArithRef]:
+        return self.a.boundaries() + self.b.boundaries()
 
 
 @dataclass
@@ -129,6 +147,7 @@ class _State:
     sync_set: list = field(default_factory=list)
     deferred: list = field(default_factory=list)
     visits: Dict[int, int] = field(default_factory=dict)
+    od: Dict[int, bool] = field(default_factory=dict)
     seq: int = 0
     steps: int = 0
 
@@ -239,10 +258,14 @@ class SymExec:
 
     # -- inputs ------------------------------------------------------------------------
 
-    def _visible(self, pin: int, t) -> z3.BoolRef:
+    def _signal(self, pin: int, s: "_State"):
         if pin not in self.inputs:
             raise Unsupported(f"reading pin {pin}, which has no input waveform")
-        return self.inputs[pin].level_at(t - self.L)
+        src = self.inputs[pin]
+        return src(s) if callable(src) else src
+
+    def _visible(self, pin: int, t, s: "_State" = None) -> z3.BoolRef:
+        return self._signal(pin, s).level_at(t - self.L)
 
     # -- one instruction -------------------------------------------------------------------
 
@@ -300,11 +323,10 @@ class SymExec:
             if t == 0:
                 if o["pin"] >= ISA.output_pins:
                     return halt()
-                if o["od"]:
-                    raise Unsupported("open-drain pins")
+                s.od[o["pin"]] = bool(o["od"])
                 s.seq += 1
                 s.events.append(Event(s.now + 1, o["pin"], z3.BoolVal(bool(o["level"])),
-                                      (1, s.seq), s.pc))
+                                      (1, s.seq), s.pc, bool(o["od"])))
             elif t == 1:
                 s.X = o["imm"]
             elif t == 2:
@@ -323,7 +345,25 @@ class SymExec:
 
         elif name == "PULL":
             if not o["block"]:
-                raise Unsupported("non-blocking PULL (depends on symbolic arrival times)")
+                n = 1 if cfg["OUT_N"] + 1 <= 8 else 2
+                if s.next_byte + n > len(self.tx):
+                    s.now = s.now + 1                        # nothing more will ever arrive
+                    s.pc = nxt % ISA.program_words
+                    return None
+                ready = z3.And(*[b.arrival <= s.now
+                                 for b in self.tx[s.next_byte: s.next_byte + n]])
+                out = []
+                for got, st in self._fork(s, ready):
+                    if got:
+                        bs = self.tx[st.next_byte: st.next_byte + n]
+                        st.next_byte += n
+                        st.osr = (z3.ZeroExt(8, bs[0].data) if n == 1
+                                  else z3.Concat(bs[1].data, bs[0].data))
+                        st.osr_count = 0
+                    st.now = st.now + 1
+                    st.pc = nxt % ISA.program_words
+                    out.append((got, st))
+                return out
             done = pull()
             if done is None:
                 return self._end(s, "PULL with no more bytes")
@@ -371,7 +411,7 @@ class SymExec:
             s.obl.append(Obligation("never LATE (OUT on time)",
                                     z3.And(fire - arm >= 1, fire - arm < HALF), s.pc))
             s.seq += 1
-            s.events.append(Event(fire, pin, level, (0, s.seq), s.pc))
+            s.events.append(Event(fire, pin, level, (0, s.seq), s.pc, s.od.get(pin, False)))
             if victim is None:
                 s.slots[s.slots.index(None)] = fire
             else:
@@ -396,7 +436,7 @@ class SymExec:
                     bit = z3.Bool(f"in_{pin}_{len(s.deferred)}")
                     s.deferred.append((bit, pin, s.now))
                 else:
-                    bit = self._visible(pin, s.now)
+                    bit = self._visible(pin, s.now, s)
             w = cfg["IN_N"] + 1
             if s.isr_count < w:
                 idx = s.isr_count if not cfg["IN_MSB"] else cfg["IN_N"] - s.isr_count
@@ -413,34 +453,43 @@ class SymExec:
                 raise Unsupported("WAIT with a timeout")
             if pin not in self.inputs:
                 raise Unsupported(f"WAIT on pin {pin}, which has no input waveform")
-            wave = self.inputs[pin]
+            sig = self._signal(pin, s)
             w = s.now
-            # candidate match times: w itself (level modes) and every boundary + L
-            prev = [wave.initial] + wave.levels[:-1]
-            cands = []
+            L = self.L
+            cands = []                                   # (visible time, condition)
             if mode in (3, 4):
-                want = mode == 3
-                lvl_w = self._visible(pin, w)
-                cands.append((w, lvl_w == want))
-            for i, (tt, v) in enumerate(zip(wave.times, wave.levels)):
-                vis = tt + self.L
+                lvl_w = sig.level_at(w - L)
+                cands.append((w, lvl_w if mode == 3 else z3.Not(lvl_w)))
+            if hasattr(sig, "split_boundaries"):
+                older, recent = sig.split_boundaries()
+                if older:                                # checked, not assumed
+                    s.obl.append(Obligation("older edges were visible before the WAIT",
+                                            z3.And(*[ob + L < w for ob in older]), s.pc))
+            else:
+                recent = sig.boundaries()
+            for b in recent:
+                now_l, before = sig.level_at(b), sig.level_at(b - 1)
                 if mode == 0:
-                    cond = z3.And(z3.Not(prev[i]), v)
+                    cond = z3.And(now_l, z3.Not(before))
                 elif mode == 1:
-                    cond = z3.And(prev[i], z3.Not(v))
+                    cond = z3.And(z3.Not(now_l), before)
                 elif mode == 2:
-                    cond = prev[i] != v
+                    cond = now_l != before
+                elif mode == 3:
+                    cond = z3.And(now_l, z3.Not(before))
                 else:
-                    cond = v == (mode == 3)
-                cands.append((vis, z3.And(vis >= w, cond)))
-            # fork: the k-th candidate is the first one that matches
+                    cond = z3.And(z3.Not(now_l), before)
+                cands.append((b + L, z3.And(b + L >= w, cond)))
+            # fork: candidate i is the earliest match (ties: the first listed)
             forks, none_before = [], []
-            for t_m, cond in cands:
+            for i, (t_m, cond) in enumerate(cands):
+                earlier = [z3.Not(z3.And(cj, z3.Or(tj < t_m, z3.And(tj == t_m, j < i))))
+                           for j, (tj, cj) in enumerate(cands) if j != i]
                 st = copy.deepcopy(s)
-                st.path.append(z3.And(cond, *none_before))
+                st.path.append(z3.And(cond, *earlier))
                 st.T = t_m
                 st.now = t_m + 1
-                st.snapshot = {p: self._visible(p, t_m) for p in self.inputs}
+                st.snapshot = {p: self._visible(p, t_m, s) for p in self.inputs}
                 st.pc = (s.pc + 1) % ISA.program_words
                 forks.append(("match", st))
                 none_before.append(z3.Not(cond))
@@ -469,7 +518,7 @@ class SymExec:
             elif cond in (3, 4):
                 if sel >= ISA.pins:
                     return halt()
-                lvl = self._visible(sel, s.now)
+                lvl = self._visible(sel, s.now, s)
                 c = lvl if cond == 3 else z3.Not(lvl)
                 out = []
                 for taken, st in self._fork(s, c):

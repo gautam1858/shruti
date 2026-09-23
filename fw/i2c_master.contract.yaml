@@ -1,0 +1,12 @@
+# Contract for i2c_master.s: one write transaction, START to STOP, against a symbolic slave
+# that ACKs or NACKs each byte and may stretch the clock after every ACK.
+program: i2c_master.s
+kind: i2c_master
+loop: top
+assume:
+  P: {min: 65, max: 2000}          # half the SCL period (65 = fast-mode tLOW at 50 MHz)
+  pins: {scl: B6, sda: B7}
+  cfg: {OUT_MSB: 1, OUT_N: 7}      # written by the host (the program has no room for SHIFT)
+  bytes: [d0, d1]                  # address byte and one data byte, queued together
+  stretch: {max: 1000}             # cycles the slave may hold SCL low after each ACK
+  slave_delay: {min: 1, max: 2}    # cycles from an SCL edge at the slave to its response

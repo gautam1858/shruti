@@ -48,11 +48,20 @@ The Event Machines cannot issue an instruction per half-bit at 10 Mbit/s, so Eth
 
 ## Verification
 
-Alongside proof-carrying firmware, the distinctive claim is a formal proof in SymbiYosys that the on-die serial MAC and decision logic compute exactly what the exported integer reference model computes, for every weight set and feature vector (k-induction over the MAC counter, SAT equivalence for argmax and thresholds); the reference is itself checked against the PyTorch model on the dataset. Around it: a cycle-accurate Python ISS written before any RTL, constrained-random differential testing of RTL against the ISS, protocol-level cocotb bus models with mutation tests, formal properties on the scheduler (fires at exactly T+d, never earlier, never twice), edge capture (no loss while an EM waits) and FIFOs (no silent overflow), an LLM red team whose bug yield is measured and reported per method, gate-level simulation after place-and-route, and an FPGA prototype (Tang Nano 20K) proven against a USB-UART adapter, SPI flash and an I2C sensor.
+Alongside proof-carrying firmware, the distinctive claim is a formal proof in SymbiYosys that the on-die serial MAC and decision logic compute exactly what the exported integer reference model computes, for every weight set and feature vector (k-induction over the MAC counter, SAT equivalence for argmax and thresholds); the reference is itself checked against the training pipeline's model on the dataset. Around it: a cycle-accurate Python ISS written before any RTL, constrained-random differential testing of RTL against the ISS, protocol-level cocotb bus models with mutation tests, formal properties on the scheduler (fires at exactly T+d, never earlier, never twice), edge capture (no loss while an EM waits) and FIFOs (no silent overflow), an LLM red team whose bug yield is measured and reported per method, gate-level simulation after place-and-route, and an FPGA prototype (Tang Nano 20K) proven against a USB-UART adapter, SPI flash and an I2C sensor.
 
 ## Status
 
-Spec v1.0: 23 Sep 2026. Milestone 0 in `src/`: synchronisers, selectable glitch filter and edge strobes, through the CMOS5L flow. ISA freeze 11 Oct; RTL and first Ear model through November; FPGA bring-up in December; feature freeze 20 Dec; submission 12 Jan 2027. Built in public in this repo.
+Spec v1.0: 23 Sep 2026, with the ISA reconciled to v1.1 (`docs/isa-decisions.md`). Milestone 0 in `src/`: synchronisers, selectable glitch filter and edge strobes, through the CMOS5L flow.
+
+Working today, all in Python, with tests (`python -m pytest`):
+- the cycle-accurate ISS (`iss/`), generated from `isa/isa.yaml`;
+- the assembler and disassembler (`asm/`), round-trip checked over all 65,536 words;
+- firmware (`fw/`), each tested against a model of the peer device: UART transmit and receive, SPI master and slave, I2C master;
+- `shruti prove` (`prove/`): contracts proved for UART transmit (any number of frames), UART receive, SPI master and I2C master, with counterexamples replayed on the ISS where a peer model exists;
+- the Ear (`ear/`): a bit-exact reference checked against the RTL's input path, a protocol simulator, and a first trained model (`ear/REPORT.md`, simulated buses only).
+
+Next: RTL for the Event Machines once the language is chosen (11 Oct), the Ear RTL, then integration (29 Nov), FPGA bring-up in December, feature freeze 20 Dec and submission 12 Jan 2027. Built in public in this repo.
 
 ## Repository layout
 
