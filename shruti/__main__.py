@@ -32,6 +32,12 @@ def main(argv=None) -> int:
         return 2
     print(f"{a.program} against {cpath}:")
     print(out.report())
+    if out.proved and c.induction:
+        from prove.check import prove_unbounded
+        ind = prove_unbounded(c, Path(a.program).read_text())
+        print(ind.report())
+        if not ind.proved:
+            return 1
     if a.min_P and out.proved:
         print(f"smallest P for which the contract holds: {min_P(c, words)}")
     return 0 if out.proved else 1

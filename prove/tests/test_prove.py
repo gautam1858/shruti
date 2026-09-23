@@ -115,3 +115,37 @@ def test_cli(capsys):
     from shruti.__main__ import main
     assert main(["prove", str(FW / "uart_tx.s")]) == 0
     assert "PROVED for P in 8..65535" in capsys.readouterr().out
+
+
+# -- unbounded proof by induction --------------------------------------------------------
+
+from prove import prove_unbounded  # noqa: E402
+
+
+def test_uart_tx_is_proved_for_any_number_of_frames():
+    out = prove_unbounded(CONTRACT)
+    assert out.proved, out.report()
+    assert out.base == "holds" and out.step == "holds"
+
+
+@pytest.mark.parametrize("name", sorted(BROKEN))
+def test_broken_programs_fail_the_unbounded_proof(name):
+    old, new = BROKEN[name]
+    out = prove_unbounded(CONTRACT, SRC.replace(old, new))
+    assert not out.proved
+    assert out.base != "holds" or out.step != "holds"
+
+
+def test_an_invariant_that_does_not_hold_is_rejected():
+    """The step must fail if the claimed invariant is wrong (here: the stop bit armed at T)."""
+    import copy
+    c = copy.copy(CONTRACT)
+    c.induction = {**CONTRACT.induction, "slots": [["T-2*P", "any"], ["T", 1]]}
+    out = prove_unbounded(c)
+    assert not out.proved
+
+
+def test_cli_reports_the_unbounded_proof(capsys):
+    from shruti.__main__ import main
+    assert main(["prove", str(FW / "uart_tx.s")]) == 0
+    assert "PROVED for any number of frames" in capsys.readouterr().out

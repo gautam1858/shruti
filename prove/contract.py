@@ -60,6 +60,7 @@ class Contract:
     length: str
     waveform: List[Dict[str, Any]]
     frames_bound: int
+    induction: Optional[Dict[str, Any]] = None
 
     def with_P_range(self, lo: int, hi: int) -> "Contract":
         c = Contract(**{**self.__dict__})
@@ -97,6 +98,7 @@ def load_contract(path) -> Contract:
             length=str(fr["length"]),
             waveform=list(fr["waveform"]),
             frames_bound=int(raw.get("bounds", {}).get("frames", len(a["tx_fifo"]))),
+            induction=raw.get("induction"),
         )
     except KeyError as e:
         raise ContractError(f"{path}: missing key {e}") from None

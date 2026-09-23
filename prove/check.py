@@ -96,16 +96,18 @@ class Frame:
     end: z3.ArithRef
 
 
-def contract_formula(c: Contract, events, P, bytes_: Sequence[Byte], assume=()):
-    """(property, frames, definitions) for the given drive events."""
+def contract_formula(c: Contract, events, P, bytes_: Sequence[Byte], assume=(),
+                     prev_end=None, holds=()):
+    """(property, frames, definitions) for the given drive events. prev_end overrides the
+    contract's idle start; holds adds (from, to, level) intervals that must also hold."""
     idle = z3.BoolVal(bool(c.idle_level))
     defs: list = []
     tl = PinTimeline(events, c.pin, bool(c.initial.get(c.pin, 1)), defs, assume)
     segs = expand_waveform(c.waveform)
     bit = lambda d, i: z3.Extract(i, i, d) == 1
-    props = []
+    props = [tl.holds_on(a, b, v) for a, b, v in holds]
     frames = []
-    prev_end = z3.IntVal(c.idle_from)
+    prev_end = z3.IntVal(c.idle_from) if prev_end is None else prev_end
     for b in bytes_:
         found, s = tl.first_drive(z3.Not(idle), prev_end)
         props.append(found)
@@ -272,3 +274,115 @@ def min_P(c: Contract, words, lo: int = 1) -> int:
     while not prove(c, words, (m, c.P_max)).proved:
         m += 1
     return m
+
+
+# -- unbounded proofs by induction over the loop head ---------------------------------------
+
+@dataclass
+class InductionOutcome:
+    proved: bool
+    seconds: float
+    P_range: Tuple[int, int]
+    base: str                                   # "holds" or what failed
+    step: str
+
+    def report(self) -> str:
+        lo, hi = self.P_range
+        if self.proved:
+            return (f"PROVED for any number of frames, P in {lo}..{hi}, all data bytes and "
+                    f"arrival times ({self.seconds:.2f} s): base case and induction step hold")
+        return (f"NOT PROVED for an unbounded number of frames ({self.seconds:.2f} s): "
+                f"base case {self.base}; induction step {self.step}")
+
+
+def _invariant(c: Contract, final: dict, events, P, T, now) -> z3.BoolRef:
+    """The loop-head invariant from the contract's induction section, at a given state."""
+    ind = c.induction
+    env = {"P": P, "T": T}
+    bit = lambda d, i: None
+    conds = []
+    lo, hi = (eval_expr(e, env, bit) for e in ind["now"])
+    conds += [now >= lo, now <= hi]
+    want = [(eval_expr(t, env, bit), lv) for t, lv in ind["slots"]]
+    fires = [f for f in final["slots"] if f is not None]
+    if len(fires) != len(want):
+        return z3.BoolVal(False)
+    wt = [w for w, _ in want]
+    conds.append(z3.Or(z3.And(fires[0] == wt[0], fires[1] == wt[1]),
+                       z3.And(fires[0] == wt[1], fires[1] == wt[0])))
+    # the last events armed are the pending slots, with the required levels
+    tail = [e for e in events if e.pin == c.pin][-len(want):]
+    for (w, lv), e in zip(want, tail):
+        conds.append(e.time == w)
+        if lv != "any":
+            conds.append(e.level == z3.BoolVal(bool(lv)))
+    return z3.And(*conds)
+
+
+def prove_unbounded(c: Contract, source: Optional[str] = None,
+                    P_range=None) -> InductionOutcome:
+    """Base case: from reset, the first frame meets the contract and the loop head is then
+    reached in a state satisfying the invariant. Step: from any state satisfying the
+    invariant, one more byte gives a frame that meets the contract, does not disturb the
+    previous stop bit, and returns to the loop head satisfying the invariant."""
+    from asm import Assembler
+    t0 = time.perf_counter()
+    src = source if source is not None else c.program.read_text()
+    a = Assembler()
+    words = a.assemble(src, str(c.program))
+    loop = a.labels[c.induction["loop"]]
+    lo, hi = P_range or (c.P_min, c.P_max)
+    P = z3.Int("P")
+    base_assume = [P >= lo, P <= hi]
+
+    def check(assume, res, props) -> str:
+        s = z3.Solver()
+        s.add(*assume, *res.path)
+        if s.check() != z3.sat:                 # guard against a vacuous proof
+            return "vacuous: the assumptions contradict each other"
+        conds = [ob.cond for ob in res.obligations] + props
+        s.add(z3.Not(z3.And(*conds)))
+        r = s.check()
+        if r == z3.unsat:
+            return "holds"
+        if r != z3.sat:
+            return f"unknown ({r})"
+        m = s.model()
+        failed = [ob.name for ob in res.obligations
+                  if z3.is_false(m.eval(ob.cond, model_completion=True))]
+        return "fails: " + (", ".join(dict.fromkeys(failed)) or "waveform or invariant") + \
+            f" (P = {m.eval(P, model_completion=True)})"
+
+    # base case
+    b0 = Byte(z3.BitVec("d0", 8), z3.Int("a0"))
+    res = SymExec(words, P, [b0], cfg=c.cfg, stop_at=(loop, 2)).run()
+    assume = base_assume + [b0.arrival >= 0]
+    prop, frames, defs = contract_formula(c, res.events, P, [b0], assume)
+    inv = _invariant(c, res.final, res.events, P, res.final["T"], res.final["now"])
+    base = check(assume + defs, res, [prop, inv])
+    if res.reason != "stop_at":
+        base = f"fails: the loop head is not reached again ({res.reason})"
+
+    # induction step
+    T0, now0, prev = z3.Int("T0"), z3.Int("now0"), z3.Bool("prev_level")
+    env = {"P": P, "T": T0}
+    nolv = lambda d, i: None
+    slots = []
+    for t_expr, lv in c.induction["slots"]:
+        level = prev if lv == "any" else z3.BoolVal(bool(lv))
+        slots.append((eval_expr(t_expr, env, nolv), c.pin, level))
+    b1 = Byte(z3.BitVec("d1", 8), z3.Int("a1"))
+    init = dict(pc=loop, now=now0, T=T0, slots=slots, osr_count=8)
+    res = SymExec(words, P, [b1], cfg=c.cfg, init=init, stop_at=(loop, 2)).run()
+    nlo, nhi = (eval_expr(e, env, nolv) for e in c.induction["now"])
+    assume = base_assume + [now0 >= nlo, now0 <= nhi]
+    stop_start = eval_expr(c.induction["slots"][-1][0], env, nolv)
+    prop, frames, defs = contract_formula(
+        c, res.events, P, [b1], assume, prev_end=T0,
+        holds=[(stop_start, T0, z3.BoolVal(bool(c.idle_level)))])
+    inv = _invariant(c, res.final, res.events, P, res.final["T"], res.final["now"])
+    step = check(assume + defs, res, [prop, inv])
+    if res.reason != "stop_at":
+        step = f"fails: the loop head is not reached again ({res.reason})"
+    return InductionOutcome(base == "holds" and step == "holds", time.perf_counter() - t0,
+                            (lo, hi), base, step)

@@ -19,3 +19,10 @@ guarantee:
       - {from: "k*P", to: "(k+1)*P", level: "d[k-1]", k: "1..8"}     # data, LSB first
       - {from: "9*P", to: "10*P", level: 1}                          # stop bit
 bounds: {frames: 2}
+# Unbounded proof: the invariant at the loop head `top`, reached after every frame. The stop
+# bit is armed at T-P (T is the end of the stop bit) and the last data bit at T-2P, and the
+# program is at most 2 cycles past the stop bit's start and at least 3 cycles past bit 6's.
+induction:
+  loop: top
+  slots: [["T-2*P", any], ["T-P", 1]]
+  now: ["T-3*P+3", "T-P+2"]
