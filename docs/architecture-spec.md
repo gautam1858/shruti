@@ -97,7 +97,7 @@ bit:    ADDT  P                  ; T += B
 
 Back-to-back bytes start exactly at the end of the previous stop bit; after idle, the start bit follows 2 cycles after the PULL returns. The two scheduler slots throttle the loop so it never runs more than two edges ahead. The v1.0 example (`ADDT 0, now` then `OUT @T+0`) was late by construction, since the slot was armed for a cycle that had already passed; that case is now an ISS regression test.
 
-Three things this gives that PIO does not: hardware WAIT with timeout (needed for CAN arbitration, I2C clock stretching and USB turnaround), deferred hardware sampling at a computed time (a mid-bit read is one instruction), and a snapshot of every pin at the edge so a slave can read data exactly at the clock edge. Measured on the ISS (fw/), the v1.0 claim that UART, SPI and I2C each fit in 12 words was wrong for everything but UART transmit: UART transmit is 12 words, UART receive 17, SPI master (mode 0) 19, and I2C master write (multi-byte, ACK check, clock stretching, STOP and bus-free time) exactly 32, with its bit order set by the host through EMx_CFG. So 32 words hold UART transmit plus receive (29) or SPI master plus UART transmit (31) in one EM, but I2C master fills an EM on its own; SPI slave is not written yet. Speed limits at 50 MHz, also measured: UART transmit B >= 4 cycles, UART receive B >= 9, SPI SCK up to 5 MHz (P >= 5).
+Three things this gives that PIO does not: hardware WAIT with timeout (needed for CAN arbitration, I2C clock stretching and USB turnaround), deferred hardware sampling at a computed time (a mid-bit read is one instruction), and a snapshot of every pin at the edge so a slave can read data exactly at the clock edge. Measured on the ISS (fw/), the v1.0 claim that UART, SPI and I2C each fit in 12 words was wrong for everything but UART transmit: UART transmit is 12 words, UART receive 17, SPI master (mode 0) 19, and I2C master write (multi-byte, ACK check, clock stretching, STOP and bus-free time) exactly 32, with its bit order set by the host through EMx_CFG. So 32 words hold UART transmit plus receive (29) or SPI master plus UART transmit (31) in one EM, but I2C master fills an EM on its own; SPI slave (mode 0) is 18 words. Speed limits at 50 MHz, also measured: UART transmit B >= 4 cycles, UART receive B >= 9, SPI master SCK up to 5 MHz (P >= 5), SPI slave SCK phases of at least 4 cycles.
 
 ## The Ear: identifier and retraining loop
 
@@ -156,12 +156,13 @@ Electrical: logic levels are whatever the Tiny Tapeout board provides (confirm 3
 
 ## Memory-first area budget
 
-The design holds about 5,400 bits of state and an estimated 10,600 cells (10,400 without the two Ethernet stretch blocks), against roughly 14,400 usable cells (24 tiles at ~1,000 cells per tile, 60% utilisation for routing and clock tree). That leaves ~28% headroom before the first synthesis run; estimates are pre-synthesis and carry +/-30%, so weekly measured numbers replace them from week five.
+The design holds about 5,000 bits of state (the table's sum; v1.0 of this text said 5,400) and an estimated 10,900 cells (10,700 without the two Ethernet stretch blocks), against roughly 14,400 usable cells (24 tiles at ~1,000 cells per tile, 60% utilisation for routing and clock tree). That leaves ~24% headroom before the first synthesis run; estimates are pre-synthesis and carry +/-30%, so weekly measured numbers replace them from week five.
 
 | Block | State bits | Est. cells | Note / cut option |
 | --- | --- | --- | --- |
 | EM program memory, 2 x 32 x 16 | 1,024 | 1,600 | Flops plus 32:1 read mux; cut: share one 32-word memory between EMs |
 | Event Machines x2 (registers, decode, shifters, 3 comparators each) | ~400 | 2,400 | Cut: single EM |
+| ISA v1.1 additions x2 (P, CFG, T_PASSED, LATE/OVF/UNF, P >> s mux, ADDT-now compare) | ~66 | 300 | Cut: drop the P/4 and P/8 forms |
 | Scheduler pin drive, open-drain modes | ~30 | 200 | |
 | Pin sync, per-pin glitch filters (bypass, 2-of-3 or 3-of-5 majority; 3-of-5 rejects pulses under 60 ns and suits buses up to a few MHz), edge detect, 24-bit timestamp | ~230 | 400 | |
 | Host FIFOs, 4 deep x 8 bits, TX and RX per EM | 128 | 250 | |
@@ -173,7 +174,7 @@ The design holds about 5,400 bits of state and an estimated 10,600 cells (10,400
 | CRC5/CRC16 unit (USB), optional | 16 | 150 | Drop if USB is not attempted |
 | Manchester serializer (Ethernet transmit): divider, XOR, differential drive | ~24 | 150 | Stretch (section 11); first on the cut list |
 | DDR edge capture, 12 pins (10 ns timestamps) | ~48 | 60 | Stretch; half-cycle paths need explicit timing constraints |
-| **Total** | **~5,000** | **10,600** | 14,400 usable at 6x4; ~18,000 at 8x4 |
+| **Total** | **~5,000** | **10,900** | 14,400 usable at 6x4; ~18,000 at 8x4 |
 
 SRAM decision rule: use one SRAM macro for program, weights and recorder only if a single macro of at least 4 kbit fits in 3 tiles or fewer including its keep-out, checked against the CMOS5L template and the ttihp0p2 SRAM example in week one. Otherwise stay with flip-flops: a first tapeout with no macro carries no LEF, timing-model or placement risk, and the budget above already fits without one.
 

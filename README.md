@@ -4,7 +4,7 @@
 
 Shruti (Sanskrit: "that which is heard") is an open-source protocol emulator chip for Tiny Tapeout (IHP 130nm CMOS5L, 6x4 tiles), built for the [Jane Street protocol emulator ASIC competition](https://blog.janestreet.com/protocol-emulator-asic-competition/). It speaks UART, SPI and I2C from firmware, and it listens: an on-die ternary classifier identifies an unknown bus from its edge timing, flags traffic it does not recognise, and can be retrained after fabrication.
 
-**Target** Tiny Tapeout 6x4, IHP 130nm CMOS5L · **Clock** 50 MHz (40 or 60 MHz if Ethernet is attempted), 24 MHz fallback · **Logic** ~10,600 cells, estimated pre-synthesis, flip-flops only · **Submission** 12 Jan 2027 for the 18 Jan deadline · **Licence** Apache-2.0
+**Target** Tiny Tapeout 6x4, IHP 130nm CMOS5L · **Clock** 50 MHz (40 or 60 MHz if Ethernet is attempted), 24 MHz fallback · **Logic** ~10,900 cells, estimated pre-synthesis, flip-flops only · **Submission** 12 Jan 2027 for the 18 Jan deadline · **Licence** Apache-2.0
 
 Full design: [docs/architecture-spec.md](docs/architecture-spec.md).
 
@@ -22,7 +22,7 @@ The RP2040's PIO is cycle-exact, but its timing is relative to its own instructi
 2. `IN pin @ T+d`: hardware samples the pin at a computed future time, so a mid-bit read is one instruction.
 3. Edge-latched snapshot: all 12 watchable pins are latched as they stood at the matched edge, so a slave reads data at the clock edge, not several cycles later.
 
-Two Event Machines, 16-bit instructions, 32 words each. Measured on the simulator: UART transmit is 12 words, UART receive 17, SPI master 19 and I2C master 32.
+Two Event Machines, 16-bit instructions, 32 words each. Measured on the simulator: UART transmit is 12 words, UART receive 17, SPI master 19, SPI slave 18 and I2C master 32.
 
 ## The Ear: identify, flag, learn
 
@@ -43,7 +43,7 @@ The Event Machines cannot issue an instruction per half-bit at 10 Mbit/s, so Eth
 ## Silicon realities
 
 - I/O: all 24 Tiny Tapeout signals. 8 bidirectional bus pins (`uio`) with per-pin open-drain mode for I2C and 1-Wire (CAN goes through an external transceiver), 4 input-only monitor pins, a 3-wire host SPI, trigger-in, and outputs for MISO, IRQ, trigger-out, the class LEDs and the two flags. The demo board's RP2040 is the host.
-- Memory first: about 5,400 bits of state, all in flip-flops; ~10,600 cells estimated against ~14,400 usable (24 tiles at ~1,000 cells, 60% utilisation). An SRAM macro is optional, used only if a macro of at least 4 kbit fits in 3 tiles or fewer including keep-out, checked in week one. Flops are the safe path for a first tapeout.
+- Memory first: about 5,000 bits of state, all in flip-flops; ~10,900 cells estimated against ~14,400 usable (24 tiles at ~1,000 cells, 60% utilisation). An SRAM macro is optional, used only if a macro of at least 4 kbit fits in 3 tiles or fewer including keep-out, checked in week one. Flops are the safe path for a first tapeout.
 - Glitch filter: per pin, fully synchronous, configurable (bypass, 2-of-3 or 3-of-5 majority). 3-of-5 rejects pulses under 60 ns at 50 MHz and suits buses up to a few MHz; faster clocks use 2-of-3 or bypass. No analog delay lines: nothing to calibrate, and it can be formally checked.
 
 ## Verification

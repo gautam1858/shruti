@@ -1,0 +1,6 @@
+# Python toolchain: ISS, assembler, firmware tests, prover, Ear reference and training.
+# The cocotb RTL tests have their own list in test/requirements.txt.
+pytest==8.4.2
+PyYAML==6.0.1
+z3-solver==5.1.0.0
+numpy==2.4.6

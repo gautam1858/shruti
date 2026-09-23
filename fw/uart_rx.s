@@ -4,6 +4,8 @@
 ; full FIFO drops the byte and sets OVF). A frame whose stop bit is low is
 ; dropped and sets SYNC flag 0 (framing error). A low pulse shorter than half
 ; a bit is ignored.
+; Speed limit (measured on the ISS): back-to-back frames need B >= 9 cycles.
+; Faster input loses bytes without setting any flag.
 
 .pin rx M0
 

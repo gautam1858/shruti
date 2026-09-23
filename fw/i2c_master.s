@@ -4,7 +4,8 @@
 ; Host interface: write the address byte (R/W = 0) and the data bytes to the
 ; TX FIFO before or while the transfer runs; the transfer ends with a STOP
 ; when the FIFO is empty after an ACK. A NACK ends the transfer with a STOP
-; and sets SYNC flag 1.
+; and sets SYNC flag 1. After a NACK the host must flush the TX FIFO (or
+; reset the EM): bytes still queued would start a new transaction.
 ; Both lines are open-drain. Every SCL release waits until SCL is seen rising,
 ; so slaves may stretch the clock. SDA changes 8 cycles after SCL falls.
 ; The waits are on edges, not levels: the program runs ahead of its scheduled
