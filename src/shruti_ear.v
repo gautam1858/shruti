@@ -70,6 +70,8 @@ module shruti_ear (
   reg        valid;
 
   wire counting = en && state == S_RUN;
+  wire clear_now = (state == S_PAUSE) ? (p == 10'd647 && (!en || !hold))
+                                      : (!en || (state == S_HELD && !hold));
 
   // per pin
   reg [47:0] hist   [0:3];           // 8 bins x 6 bits, bin k in bits 6k+5:6k
@@ -134,12 +136,25 @@ module shruti_ear (
   reg [5:0]  n_max_c[0:3];
   reg [3:0]  n_has_min;
 
+  // Values derived from each pin's interval counter and minimum, registered a cycle ahead so
+  // the histogram update starts from flip-flops: the code of `since`, whether its half-octave
+  // is below the minimum and by how much (clamped to 8), its distance above the minimum, and
+  // the compares against the shortest and longest codes. pd_*[pn] always equals the function
+  // of this cycle's since, min_h, min_c and max_c (see the next-state copies below).
+  reg [5:0]  pd_code [0:3];
+  reg        pd_lt   [0:3];          // h < min_h
+  reg [3:0]  pd_sc   [0:3];          // min_h - h, clamped to 8
+  reg [4:0]  pd_dd   [0:3];          // h - min_h
+  reg        pd_maxr [0:3];          // (max_c >> 1) - h > 6: the longest leaves the burst
+  reg        pd_clt  [0:3];          // code < min_c
+  reg        pd_cgt  [0:3];          // code > max_c
+
   // Shifting the histogram when the minimum drops by s half-octaves: bin j < 7 takes bin
   // j - s (0 if j < s), and bin 7 takes the saturated sum of bins 7 - s .. 7. The suffix
   // sums suf[k] = min(63, bins k..7) give that sum for every s at once.
   reg [5:0]  code;
-  reg [4:0]  h, s, dd;
-  reg [3:0]  sc;                     // s clamped to 8
+  reg [4:0]  h, dd;
+  reg [3:0]  sc;
   reg [2:0]  bin;
   reg [47:0] sh;
   reg [5:0]  suf [0:7];
@@ -152,10 +167,9 @@ module shruti_ear (
       n_min_c[pn] = min_c[pn];
       n_max_c[pn] = max_c[pn];
       n_has_min[pn] = has_min[pn];
-      code = log2_code(since[pn]);
+      code = pd_code[pn];
       h = code[5:1];
-      s = min_h[pn] - h;
-      sc = (s > 5'd8) ? 4'd8 : s[3:0];
+      sc = pd_sc[pn];
       suf[7] = hist[pn][42 +: 6];
       for (k = 6; k >= 0; k = k - 1)
         suf[k] = sat_add6(suf[k + 1], hist[pn][6*k +: 6]);
@@ -169,21 +183,56 @@ module shruti_ear (
           n_max_c[pn] = code;
           n_hist[pn] = 48'd1;
         end else begin
-          if (h < min_h[pn]) begin
+          if (pd_lt[pn]) begin
             for (k = 0; k < 7; k = k + 1)
               sh[6*k +: 6] = (sc > k[3:0]) ? 6'd0 : hist[pn][6*(k - sc) +: 6];
             sh[42 +: 6] = suf[(sc >= 4'd7) ? 0 : 7 - sc];
             n_min_h[pn] = h;
-            if ({1'b0, max_c[pn][5:1]} - {1'b0, h} > 6'd6) n_max_c[pn] = code;
+            if (pd_maxr[pn]) n_max_c[pn] = code;
+            dd = 5'd0;
+          end else begin
+            dd = pd_dd[pn];
+            if (pd_dd[pn] <= 5'd6 && pd_cgt[pn]) n_max_c[pn] = code;
           end
-          dd = h - n_min_h[pn];
           bin = (dd > 5'd7) ? 3'd7 : dd[2:0];
           sh[6*bin +: 6] = sat_add6(sh[6*bin +: 6], 6'd1);
           n_hist[pn] = sh;
-          if (code < min_c[pn]) n_min_c[pn] = code;
-          if (dd <= 5'd6 && code > n_max_c[pn]) n_max_c[pn] = code;
+          if (pd_clt[pn]) n_min_c[pn] = code;
         end
       end
+    end
+  end
+
+  // next-cycle copies of since, min_h, min_c and max_c, and the derived values from them
+  reg [15:0] nx_since;
+  reg [4:0]  nx_min_h, nx_h;
+  reg [5:0]  nx_min_c, nx_max_c, nx_code;
+  reg [5:0]  n_pd_code [0:3];
+  reg        n_pd_lt [0:3], n_pd_maxr [0:3], n_pd_clt [0:3], n_pd_cgt [0:3];
+  reg [3:0]  n_pd_sc [0:3];
+  reg [4:0]  n_pd_dd [0:3];
+  reg [4:0]  nx_s;
+  integer pq;
+  always @* begin
+    for (pq = 0; pq < 4; pq = pq + 1) begin
+      if (clear_now) begin
+        nx_since = 16'd0; nx_min_h = 5'd0; nx_min_c = 6'd63; nx_max_c = 6'd0;
+      end else if (counting) begin
+        nx_since = edg[pq] ? 16'd1 : (since[pq] == 16'hFFFF) ? 16'hFFFF : since[pq] + 16'd1;
+        nx_min_h = n_min_h[pq]; nx_min_c = n_min_c[pq]; nx_max_c = n_max_c[pq];
+      end else begin
+        nx_since = since[pq]; nx_min_h = min_h[pq]; nx_min_c = min_c[pq]; nx_max_c = max_c[pq];
+      end
+      nx_code = log2_code(nx_since);
+      nx_h = nx_code[5:1];
+      nx_s = nx_min_h - nx_h;
+      n_pd_code[pq] = nx_code;
+      n_pd_lt[pq] = nx_h < nx_min_h;
+      n_pd_sc[pq] = (nx_s > 5'd8) ? 4'd8 : nx_s[3:0];
+      n_pd_dd[pq] = nx_h - nx_min_h;
+      n_pd_maxr[pq] = {1'b0, nx_max_c[5:1]} - {1'b0, nx_h} > 6'd6;
+      n_pd_clt[pq] = nx_code < nx_min_c;
+      n_pd_cgt[pq] = nx_code > nx_max_c;
     end
   end
 
@@ -323,6 +372,8 @@ module shruti_ear (
         hist[r] <= 48'd0; min_h[r] <= 5'd0; has_min[r] <= 1'b0; min_c[r] <= 6'd63;
         max_c[r] <= 6'd0; nedg[r] <= 8'd0; high[r] <= 17'd0; since[r] <= 16'd0;
         has_last[r] <= 1'b0; rem[r] <= 18'd0; quo[r] <= 7'd0;
+        pd_code[r] <= 6'd0; pd_lt[r] <= 1'b0; pd_sc[r] <= 4'd0; pd_dd[r] <= 5'd0;
+        pd_maxr[r] <= 1'b0; pd_clt[r] <= 1'b1; pd_cgt[r] <= 1'b0;
       end
       for (r = 0; r < 16; r = r + 1) begin
         near[r] <= 6'd0; hi[r] <= 6'd0;
@@ -352,8 +403,12 @@ module shruti_ear (
       end
 
       // window. A pause always runs to its end, so the weight ring comes back into place.
-      if (state == S_PAUSE ? (p == 10'd647 && (!en || !hold))
-                           : (!en || (state == S_HELD && !hold))) begin
+      for (r = 0; r < 4; r = r + 1) begin
+        pd_code[r] <= n_pd_code[r]; pd_lt[r] <= n_pd_lt[r]; pd_sc[r] <= n_pd_sc[r];
+        pd_dd[r] <= n_pd_dd[r]; pd_maxr[r] <= n_pd_maxr[r]; pd_clt[r] <= n_pd_clt[r];
+        pd_cgt[r] <= n_pd_cgt[r];
+      end
+      if (clear_now) begin
         // cleared: the next window starts in the next cycle the Ear is enabled
         state <= S_RUN; wlen <= 17'd0; nedges <= 9'd0;
         for (r = 0; r < 4; r = r + 1) begin
