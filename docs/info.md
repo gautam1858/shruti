@@ -4,7 +4,7 @@ Shruti is a protocol emulator that also listens. One hardware stream of filtered
 
 Every protocol program ships with a machine-checked proof that it meets its timing contract. The full design is described in `docs/architecture-spec.md`.
 
-This revision of the RTL (milestone 1) has both Event Machines, the 24-bit timestamp counter, the input path (two-flop synchroniser and a glitch filter with a selectable depth: bypass, 2-of-3 or 3-of-5 majority) on all 12 watchable pins, the pin drivers with per-pin open-drain mode, and the host SPI. Watch and the Ear come next; their outputs read 0.
+This revision of the RTL (milestone 1) has both Event Machines, the 24-bit timestamp counter, the input path (two-flop synchroniser and a glitch filter with a selectable depth: bypass, 2-of-3 or 3-of-5 majority) on all 12 watchable pins, the pin drivers with per-pin open-drain mode, the host SPI, and the Ear, whose class and flags drive `uo[7:3]`. Watch comes next; trigger out reads 0.
 
 ## How to test
 

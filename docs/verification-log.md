@@ -11,10 +11,11 @@ The submission's verification report is built from this log: every defect found,
 | ISS self-checks (event-skipping vs every-cycle mode, logging) | | 3 | | | | 3 |
 | Prover (Z3) | | | 0 | | | 0 |
 | RTL vs ISS differential (cocotb) | | | | 0 | | 0 |
+| Ear RTL vs the Python reference (cocotb) | 1 | | | 1 | | 2 |
 | Building and measuring (synthesis, timing, datasheets) | 4 | | | 1 | | 5 |
-| Gate-level simulation in CI | | | | | 1 | 1 |
+| Gate-level simulation (CI, and locally on the Yosys netlist) | | | | 1 | 1 | 2 |
 
-The two zeros are real results. The prover has proved every shipped program and has only rejected variants broken on purpose. The RTL matched the ISS the first time the differential test ran; the failures on the way were in the test harness. Both methods are sharp, going by the mutation results below, so the zeros say the ISS-level work before them was careful, not that the methods are blind.
+The two zeros are real results. The prover has proved every shipped program and has only rejected variants broken on purpose. The Event Machine RTL matched the ISS the first time the differential test ran; the failures on the way were in the test harness. The Ear RTL did not: its first version passed every class-level test but divided by the wrong length, which only the feature readback caught (below). Both methods are sharp, going by the mutation results below, so the zeros say the ISS-level work before them was careful, not that the methods are blind.
 
 ## Entries
 
@@ -37,6 +38,15 @@ ISS
 - HALT was missing from the execution log.
 - The end-of-run T_PASSED differed between event-skipping and every-cycle modes.
 
+Ear RTL (found by reading all 72 features back over SPI, window by window, against ear/features.py)
+- The time-high dividers divided by the window length plus one. The window-length counter also ticked in the closing cycle, and the divider then added one more. The quotient usually floors to the same value, so every class-level test passed. A window with a pin high for exactly half its length gave 31 instead of 32.
+
+Ear RTL (found by gate-level simulation of the Yosys netlist, before any push)
+- The multiply-stage counters had no reset. RTL simulation passed, but at gate level the feature counter stayed unknown (X) through the first inference, and the class outputs went X. They are now reset. A side-by-side RTL-versus-netlist testbench then matched cycle for cycle over five windows.
+
+Spec (found while building the Ear)
+- ear/SPEC.md said one serial divider, 6 cycles per pin, fits in the 648-cycle inference. It does not: the canonical sort needs every fraction before the first multiply. The RTL uses four dividers in parallel, and ear/SPEC.md now says so.
+
 Flow
 - The CMOS5L template's gate-level Makefile leaves out `sg13cmos5l_udp.v`, where the PDK keeps the flip-flop primitives, so every gate-level test failed to elaborate. Fixed in test/Makefile. The upstream template has the same omission.
 
@@ -58,4 +68,23 @@ RTL (src/shruti_em.v), each planted alone, against the cocotb suite:
 | Two-byte RX push writes the wrong slot on wrap | directed test (rx_fifo_two_byte_push_wraps) |
 | ADDT now: keep T only if strictly later | not caught: equivalent (when equal, both branches give the same T) |
 
-The two FIFO bugs were first missed by the random test, which is why the directed tests exist. Firmware mutations against the prover (level wait, SDA changing with the SCL fall, inverted ACK, broken UART variants) are in prove/tests.
+The two FIFO bugs were first missed by the random test, which is why the directed tests exist.
+
+Ear RTL (src/shruti_ear.v), against the `ear_` tests:
+
+| Planted bug | Caught by |
+| --- | --- |
+| Histogram merge drops bin 7 - s | window-by-window features |
+| Suffix-sum index off by one | window-by-window features |
+| Histogram shift keeps bin j = s | HOLD readback |
+| Near window 3 cycles instead of 4 | class-level (random weights) |
+| In-burst limit 7 half-octaves instead of 6 | HOLD readback |
+| Longest interval not restarted after a large drop | class-level (random weights) |
+| hi counts ignore a same-cycle change of a | class-level (random weights) |
+| Argmax prefers the later class on a tie | class-level, and the delayed window |
+| Rank tie broken by the higher pin number | window-by-window ("delayed": equal keys, asymmetric pairs) |
+| Divider compares with > instead of >= | window-by-window (high time L / 2) |
+| Divisor one less, and one more, than the length | window-by-window (tuned high times) |
+| Pause one cycle short | class-level (result timing) |
+
+The divider and rank mutants passed every class-level test at first. The "delayed" windows, with pin 3's high time tuned to each divider corner, were written to catch them, and on their first run they found the real divisor bug above. Firmware mutations against the prover (level wait, SDA changing with the SCL fall, inverted ACK, broken UART variants) are in prove/tests.
