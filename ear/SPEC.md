@@ -8,7 +8,11 @@ The Ear sees the same filtered pin levels as the Event Machines: the two-flop sy
 
 - 3-of-5 rejects pulses of 2 cycles or less, 2-of-3 pulses of 1 cycle.
 - `ear/inpath.py` models this register by register.
-- A cocotb test (`test/test.py`, `input_path_matches_reference_model`) checks the model against the RTL cycle by cycle, for all three modes and random pulses on all eight bus pins.
+- A cocotb test (`test/test.py`, `input_path_matches_reference_model`) checks the model against the RTL cycle by cycle, for all three modes and random pulses on all 12 pins.
+- The cocotb tests starting `ear_` check the RTL Ear against `ear/features.py` and `ear/mlp.py`:
+  - every window's class and flags, at the exact cycle they change;
+  - all 72 features and the best logit, read back over SPI in HOLD mode;
+  - the traffic is simulated UART, SPI and I2C with the trained weights, plus random edges with random weights.
 
 ## Windows
 
@@ -41,7 +45,7 @@ The Ear sees the same filtered pin levels as the Event Machines: the two-flop sy
 - **Features 48-59, near[a][b]** (6-bit saturating): b edges no more than 4 cycles after the latest a edge in the window, including an a edge in the same cycle.
 - **Features 60-71, hi[a][b]** (6-bit saturating): b edges while a's filtered level is high, including a change of a in that same cycle.
 
-**(resolved) Time-high fraction.** The spec gives no divider. The fraction needs one 16-by-16 division per pin per window; a serial restoring divider (6 quotient bits, 6 cycles per pin) fits inside the 648-cycle inference.
+**(resolved) Time-high fraction.** The spec gives no divider. The fraction needs one division per pin per window: floor(64 x high / length), with length up to 65,536. The RTL uses four restoring dividers, one per pin, 7 steps each, in the first 7 cycles of the pause. An earlier version of this document said one serial divider (6 cycles per pin) fits inside the 648 cycles. It does not: the canonical sort needs every pin's fraction before the first multiply, and the multiplies alone take 640 of the 648 cycles.
 
 **(resolved) Every feature is 6 bits.** The v1.0 spec had 8-bit edge counts and time-high fractions next to 6-bit counters. With ternary weights a feature cannot be scaled down, so the two 8-bit features dominated the dot products. Dropping their 2 low bits raised the integer model's test accuracy from about 80% to about 88% on simulated data (ear/REPORT.md has the current numbers), and it costs nothing.
 
@@ -59,7 +63,16 @@ class = argmax o_k, lowest k on ties;  confident = best - second >= MARGIN
 ood   = best < FLOOR  or  window edges < MIN_EDGES
 ```
 
-**(resolved) Serial schedule and cycle count.** The spec says "one feature per cycle, 8 accumulators" but also "about 700 cycles". Eight accumulators working in parallel would finish in about 80 cycles and need 8 adders. The hardware instead evaluates **one weight per cycle into a single 16-bit accumulator**: 576 cycles for layer 1 (the ReLU and shift happen as each hidden unit completes), 64 for layer 2 and 8 for the argmax. That is **648 cycles**, 13 us at 50 MHz, with one adder.
+**(resolved) Serial schedule and cycle count.** The spec says "one feature per cycle, 8 accumulators" but also "about 700 cycles". Eight accumulators working in parallel would finish in about 80 cycles and need 8 adders. The hardware instead evaluates **one weight per cycle into a single 16-bit accumulator**. The pause is **648 cycles**, 13 us at 50 MHz, with one adder:
+
+| Pause cycles | Work |
+| --- | --- |
+| 0-6 | the four dividers |
+| 7 | the canonical rank |
+| 8-583 | layer 1, 576 weights; the ReLU and shift happen as each hidden unit completes |
+| 584-647 | layer 2, 64 weights; the argmax is folded in as each output completes |
+
+The class and flags change at the end of the last pause cycle. The Python model counts the pause as 576 + 64 + 8 cycles; only the total, and so the window boundaries, has to match.
 
 **(resolved) Between the layers** the spec had no scaling step. `SHIFT` (host-set, 0..15) requantises the hidden units to 8 bits so layer 2 fits in 12 bits.
 
@@ -73,3 +86,9 @@ ood   = best < FLOOR  or  window edges < MIN_EDGES
 - Order: W1[0][0..71], W1[1][0..71], ..., W1[7][0..71], W2[0][0..7], ..., W2[7][0..7]. Weight n sits in bits 2n+1:2n.
 - The 8 thresholds B[0..7] follow as signed bytes: 1,344 bits in total.
 - The chain is sent as 168 bytes, least significant first, and stored as hex text with 16 bytes per line (`ear/weights/*.hex`).
+- In the RTL (`src/shruti_ear.v`) the 640 weights form a ring that turns by one weight per multiply cycle and is back in place when inference ends. The host shifts the first 160 bytes in through the WEIGHT port while the Ear is disabled; the 8 thresholds are separate registers. docs/host-interface.md has the register map.
+
+## Host control (RTL)
+
+- **Enable.** The first window starts in the first cycle the enable bit is set. Clearing the enable during a pause lets the pause finish, so the weight ring comes back into place.
+- **HOLD.** With HOLD set, the Ear stops after the pause with the window's counters intact. The host reads the 72 features, in canonical order, through the FEATURE port, along with the result and the best logit. Clearing HOLD clears the counters in the cycle the write takes effect, and the next window starts in the cycle after. This is how `shruti teach` captures feature snapshots with no extra storage.

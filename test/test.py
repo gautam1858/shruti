@@ -359,3 +359,254 @@ async def input_path_matches_reference_model(dut):
             got = [(observed[base + k] >> p) & 1 for k in range(n)]
             assert got == filt, f"mode {mode}, pin {p}: first mismatch at cycle " \
                 f"{next(i for i, (a, b) in enumerate(zip(got, filt)) if a != b)}"
+
+
+# -- the Ear against ear/features.py and ear/mlp.py ------------------------------------------
+
+import json  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from harness import EAR_BEST, EAR_FEATURES, EAR_RESULT  # noqa: E402
+
+from ear import protosim  # noqa: E402
+from ear.features import extract  # noqa: E402
+from ear.inpath import filter_pins  # noqa: E402
+from ear.mlp import Config, Model  # noqa: E402
+
+EAR_DIR = Path(__file__).resolve().parents[1] / "ear"
+
+
+def trained_model():
+    cfg = json.loads((EAR_DIR / "weights/default.json").read_text())["config"]
+    return Model.from_hex((EAR_DIR / "weights/default.hex").read_text(), Config(**cfg))
+
+
+def random_model(rng):
+    w = lambda: rng.choice([0, 0, 1, -1])
+    return Model([[w() for _ in range(72)] for _ in range(8)], [[w() for _ in range(8)] for _ in range(8)],
+                 Config(shift=rng.randrange(7), margin=rng.randrange(40),
+                        floor=rng.randrange(-200, 200), min_edges=rng.randrange(0, 257)),
+                 [rng.randrange(-128, 128) for _ in range(8)])
+
+
+def ear_out(uo):
+    return (uo >> 4) & 7, (uo >> 3) & 1, (uo >> 7) & 1          # class, confident, ood
+
+
+async def ear_case(chip, model, pad_edges, cycles, initial=(1, 1, 1, 1)):
+    """Drive pad edges (cycle, pin 0-3, level) on B0-B3 from the Ear's first cycle and check
+    every classification the reference makes, at the cycle the reference says it lands."""
+    await chip.reset()
+    chip.ext = sum(v << p for p, v in enumerate(initial)) | 0xF0
+    await chip.ticks(4)
+    await chip.load_ear(model)
+    start = await chip.start_ear()
+    chip.schedule(start, [(c + 20, p, v) for c, p, v in pad_edges if c + 20 < cycles])
+    await chip.ticks(start + cycles - chip.k)
+    edges = filter_pins(list(initial), [(c + 20, p, v) for c, p, v in pad_edges if c + 20 < cycles], 0)
+    windows = extract(list(initial), edges, cycles)
+    shown = ear_out(chip.outs[start])
+    checked = 0
+    for w in windows:
+        at = start + w.end + 649                  # first cycle showing this window's result
+        if at >= start + cycles:
+            break
+        r = model.infer(w.features, w.edges)
+        want = (r.cls, int(r.confident), int(r.ood))
+        before = ear_out(chip.outs[at - 1])
+        assert before == shown, f"window at {w.start}: outputs changed before the result was due"
+        assert ear_out(chip.outs[at]) == want, \
+            f"window {w.start}..{w.end}: rtl {ear_out(chip.outs[at])} reference {want} logits {r.logits}"
+        # nothing else moves until the next window's result
+        shown = want
+        checked += 1
+    return checked
+
+
+def pins_of(cap, rng):
+    assign = protosim.random_assignment(cap, rng)
+    init, edges = protosim.to_pins(cap, assign)
+    return init, edges
+
+
+@cocotb.test()
+async def ear_classifies_protocol_traffic_like_the_reference(dut):
+    """The trained weights on simulated UART, SPI and I2C traffic: every window's class,
+    confidence and OOD flags, and the cycle they change, match the Python reference."""
+    chip = await new_chip(dut)
+    rng = random.Random(5)
+    model = trained_model()
+    total = 0
+    cases = [(protosim.uart, dict(period=20)), (protosim.spi, dict(half=6)), (protosim.i2c, dict(half=12))]
+    for gen, kw in (cases if not GATES else cases[1:2]):     # gate level: SPI, 5 windows
+        cap = gen(rng, duration=14000, **kw)
+        init, edges = pins_of(cap, rng)
+        total += await ear_case(chip, model, edges, 14000, init)
+    assert total >= (6 if not GATES else 3), f"only {total} windows checked"
+
+
+@cocotb.test()
+async def ear_matches_reference_with_random_weights(dut):
+    """Random weights, thresholds and configuration on random edges, including simultaneous
+    edges on several pins and bursts that fill the histogram's top bin."""
+    chip = await new_chip(dut)
+    rng = random.Random(9)
+    total = 0
+    for _ in range(4 if not GATES else 1):
+        model = random_model(rng)
+        edges, level, t = [], [1, 1, 1, 1], 0
+        while t < 9000:
+            t += rng.choice([1, 1, 2, 3, 5, 8, 13, 40, 90, 300])
+            for p in range(4):
+                if rng.random() < 0.4:
+                    level[p] ^= 1
+                    edges.append((t, p, level[p]))
+        total += await ear_case(chip, model, edges, 9000)
+    assert total >= (4 if not GATES else 1)
+
+
+@cocotb.test(skip=GATES)
+async def ear_window_closes_after_65536_cycles(dut):
+    """Sparse edges: the window closes on time, not on its edge count."""
+    chip = await new_chip(dut)
+    rng = random.Random(3)
+    edges = [(100 + 600 * i, i % 4, (i // 4 + 1) % 2) for i in range(120)]
+    assert await ear_case(chip, random_model(rng), edges, 67000) == 1
+
+
+@cocotb.test()
+async def ear_features_read_over_spi_in_hold_mode(dut):
+    """With HOLD set the Ear stops after its first window; the host reads the 72 features
+    and the best logit, which match the reference."""
+    chip = await new_chip(dut)
+    rng = random.Random(4)
+    model = trained_model()
+    cap = protosim.spi(rng, duration=6000, half=5)
+    init, pad = pins_of(cap, rng)
+    chip.ext = sum(v << p for p, v in enumerate(init)) | 0xF0
+    await chip.ticks(4)
+    await chip.load_ear(model)
+    start = await chip.start_ear(hold=True)
+    pad = [(c + 20, p, v) for c, p, v in pad if c + 20 < 6000]
+    chip.schedule(start, pad)
+    await chip.ticks(start + 6000 - chip.k)
+    w = extract(list(init), filter_pins(list(init), pad, 0), 6000)[0]
+    assert (await chip.read(0xB0))[0] & 0x8, "held after the first window"
+    await chip.write(EAR_FEATURES, [0])
+    assert await chip.read(EAR_FEATURES, 72) == w.features
+    r = model.infer(w.features, w.edges)
+    res, lo, hi = await chip.read(EAR_RESULT, 3)
+    assert res == 0x80 | r.ood << 4 | r.confident << 3 | r.cls
+    assert (lo | hi << 8) - ((hi >> 7) << 16) == max(r.logits)
+
+
+def window_stimulus(rng, style, n=300):
+    """Pad edges for one window. 'twins' drives pins in identical pairs; 'delayed' makes pin 1
+    a copy of pin 0 two cycles later (equal rank keys, asymmetric pair features) and pin 3
+    high for all but one cycle (the divider's boundary); 'slowfast' makes intervals shrink so
+    the histogram merges; 'burst' mixes gaps from 1 cycle to 900."""
+    if style == "delayed":
+        edges, level, t = [], 1, 0
+        for i in range(n):
+            t += rng.choice([3, 4, 6, 9, 15])
+            level ^= 1
+            edges += [(t, 0, level), (t + 2, 1, level), (t + 7, 2, level)]
+        edges += [(t // 2, 3, 0), (t // 2 + 1, 3, 1)]
+        return sorted(edges)
+    edges, level, t = [], [1, 1, 1, 1], 0
+    gaps = {"twins": [2, 3, 5, 9, 17], "slowfast": None, "burst": [1, 1, 2, 6, 30, 200, 900]}[style]
+    for i in range(n):
+        if style == "slowfast":
+            t += max(1, int(2000 * (0.5 ** (i / 12))) + rng.randrange(3))
+        else:
+            t += rng.choice(gaps)
+        if style == "twins":
+            for pair in ((0, 1), (2, 3)):
+                if rng.random() < 0.5:
+                    for p in pair:
+                        level[p] ^= 1
+                        edges.append((t, p, level[p]))
+        else:
+            for p in range(4):
+                if rng.random() < 0.45:
+                    level[p] ^= 1
+                    edges.append((t, p, level[p]))
+    return edges
+
+
+def divider_hits_boundary(h, L):
+    """True if restoring division of 64 * h by L passes a remainder of exactly L - 1."""
+    r = h
+    for _ in range(7):
+        if r == L - 1:
+            return True
+        r = (r - L if r >= L else r) << 1
+    return False
+
+
+def tune_pin3(level, pad, corner):
+    """Move pin 3's low pulse to a divider corner:
+    'rem' - the division passes a remainder of exactly L - 1 (needs an odd length L);
+    'div-', 'div+' - the quotient changes if the divisor is one less, or one more;
+    'half' - high time L / 2 with L even, where the remainder lands on exactly L."""
+    base = [e for e in pad if e[1] != 3]
+
+    def length(b):
+        trial = sorted(b + [(420, 3, 0), (421, 3, 1)])
+        return extract(level, filter_pins(level, trial, 0), 400_000)[0].length
+
+    L = length(base)
+    want_odd = {"rem": 1, "half": 0}.get(corner)
+    if want_odd is not None and L % 2 != want_odd:   # move the closing edge by one cycle
+        base = [(c + 1 if c > 430 else c, p, v) for c, p, v in base]
+        L = length(base)
+        assert L % 2 == want_odd
+    if corner == "half":
+        return sorted(base + [(420, 3, 0), (420 + L - L // 2, 3, 1)])
+    for h in range(L // 2, L - 200):
+        q = 64 * h // L
+        ok = {"rem": lambda: divider_hits_boundary(h, L),
+              "div-": lambda: q != 64 * h // (L - 1),
+              "div+": lambda: q != 64 * h // (L + 1)}[corner]()
+        if ok and q < 63:
+            return sorted(base + [(420, 3, 0), (420 + L - h, 3, 1)])
+    raise AssertionError(f"no divider corner '{corner}' for window length {L}")
+
+
+@cocotb.test()
+async def ear_features_match_window_by_window(dut):
+    """HOLD after every window, read all 72 features and the result over SPI, compare with
+    the reference, release, repeat: rank ties, histogram merges, dividers and bursts."""
+    chip = await new_chip(dut)
+    rng = random.Random(11)
+    model = random_model(rng)
+    await chip.load_ear(model)
+    styles = ["twins", "delayed", "slowfast", "delayed", "burst", "delayed", "twins", "delayed"]
+    first, corners = True, ["rem", "div-", "half", "div+"]
+    for style in (styles if not GATES else styles[:4]):     # gate level: rem and div- only
+        level = [(chip.ext >> p) & 1 for p in range(4)]
+        if first:
+            start = await chip.start_ear(hold=True)
+            first = False
+        else:
+            await chip.write(0xB0, [1])                     # release: a new window starts
+            start = chip.last_rise + 5                      # after one cycle clearing the old one
+            await chip.write(0xB0, [3])                     # and hold again after it
+        pad = [(c + 400, p, v) for c, p, v in window_stimulus(rng, style)]
+        if style == "delayed":
+            assert level[3] == 1, "pin 3 idles high before a delayed window"
+            pad = tune_pin3(level, pad, corners.pop(0))
+        chip.schedule(start, pad)
+        w = extract(level, filter_pins(level, pad, 0), 400_000)[0]
+        await chip.ticks(start + w.end + 700 - chip.k)
+        assert (await chip.read(0xB0))[0] & 0x8, f"{style}: held"
+        await chip.write(EAR_FEATURES, [0])
+        got = await chip.read(EAR_FEATURES, 72)
+        assert got == w.features, f"{style}: first difference at feature " \
+            f"{next(i for i, (a, b) in enumerate(zip(got, w.features)) if a != b)}"
+        r = model.infer(w.features, w.edges)
+        res, lo, hi = await chip.read(EAR_RESULT, 3)
+        assert res == 0x80 | r.ood << 4 | r.confident << 3 | r.cls, style
+        assert (lo | hi << 8) - ((hi >> 7) << 16) == max(r.logits), style
+        # let this window's stimulus run out, so the next window starts from steady pads
+        await chip.ticks(max(0, start + pad[-1][0] + 10 - chip.k))

@@ -23,6 +23,8 @@ GATES = os.environ.get("GATES") == "yes"
 EM_BASE = (0x80, 0x90)
 CTRL, FLAGS, P_LO, P_HI, CFG_OUT, CFG_IN, TXPORT, RXPORT, RXCNT, PC = range(10)
 SYNC, FILTER, RELEASE, LEVELS, ID, VERSION, RUN_ALL = 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6
+EAR_CTRL, EAR_SEL, EAR_WEIGHTS, EAR_RESULT, EAR_BEST, EAR_NWIN, EAR_FEATURES, EAR_THR = (
+    0xB0, 0xB1, 0xB9, 0xBA, 0xBB, 0xBD, 0xBE, 0xC0)
 
 # Cycles from the SCK rising edge of the last bit of a register write to the first cycle in
 # which the write is in effect (two synchroniser flops, edge detect, the write strobe).
@@ -39,6 +41,7 @@ class Chip:
         self.sck, self.mosi, self.cs = 0, 0, 1
         self.stim = {}              # tick -> [(pin, level)]
         self.pads = {}              # tick -> 12-bit pad levels, while recording
+        self.outs = {}              # tick -> uo_out, while recording
         self.recording = False
         self.last_rise = None
         self.probe = None          # called every tick in the read-only phase
@@ -50,6 +53,7 @@ class Chip:
         self.sck, self.mosi, self.cs = 0, 0, 1
         self.stim.clear()
         self.pads.clear()
+        self.outs.clear()
         self.recording = False
         await self.ticks(5)
         self.rst_n = 1
@@ -78,6 +82,7 @@ class Chip:
         self.irq = (uo >> 1) & 1
         if self.recording:
             self.pads[self.k] = int(self.dut.uio_in.value) | (self.m << 8)
+            self.outs[self.k] = uo
         if self.probe is not None:
             self.probe()
 
@@ -145,6 +150,22 @@ class Chip:
         self.recording = True
         await self.write(RUN_ALL, [mask])
         return self.last_rise + WRITE_LATENCY
+
+    async def start_ear(self, hold=False):
+        """Enable the Ear; return the first cycle of its first window."""
+        self.recording = True
+        await self.write(EAR_CTRL, [1 | (2 if hold else 0)])
+        return self.last_rise + WRITE_LATENCY
+
+    async def load_ear(self, model, sel=(0, 1, 2, 3)):
+        """Weights, thresholds and configuration from an ear.mlp.Model."""
+        data = model.to_bytes()
+        await self.write(EAR_WEIGHTS, data[:160])
+        await self.write(EAR_THR, data[160:])
+        c = model.cfg
+        fl, me = c.floor & 0xFFF, c.min_edges
+        await self.write(EAR_SEL, [sel[0] | sel[1] << 4, sel[2] | sel[3] << 4, c.shift, c.margin,
+                                   fl & 0xFF, fl >> 8, me & 0xFF, me >> 8])
 
     def schedule(self, start, stimulus):
         """ISS-style stimulus (cycle, pin, level) relative to `start`."""

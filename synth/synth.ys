@@ -1,5 +1,5 @@
 # Used by synth.sh (run from the repo root), which fills in @LIB@ and @OUT@.
-read_verilog -sv src/project.v src/shruti_em.v src/shruti_spi.v
+read_verilog -sv src/project.v src/shruti_em.v src/shruti_spi.v src/shruti_ear.v
 synth -top tt_um_gautam1858_shruti -flatten
 dfflibmap -liberty @LIB@
 abc -liberty @LIB@

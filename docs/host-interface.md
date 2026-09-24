@@ -11,6 +11,9 @@ The host (the demo board's RP2040, or any SPI master) loads programs, sets up an
 | ui_in[2] | CS_n |
 | uo_out[0] | MISO |
 | uo_out[1] | IRQ: high while any Event Machine is halted |
+| uo_out[3] | Ear confident |
+| uo_out[6:4] | Ear class |
+| uo_out[7] | Ear out-of-distribution |
 
 ## SPI protocol
 
@@ -22,7 +25,7 @@ A transaction is CS_n low, then:
 2. an address byte;
 3. any number of data bytes.
 
-The address increments after each data byte, except at the FIFO ports (`+6` and `+7` below), where it stays put so a burst goes to the same FIFO. CS_n high ends the transaction.
+The address increments after each data byte, except at the ports (the EM FIFOs at `+6` and `+7`, and the Ear's WEIGHTS and FEATURES), where it stays put so a burst goes to the same port. CS_n high ends the transaction.
 
 On a read, MISO changes shortly after each SCK rising edge, and the master samples it on the next rising edge. A read of the RX FIFO port removes a byte only when the host clocks that byte's first bit, so ending a burst early never loses data.
 
@@ -41,6 +44,22 @@ On a read, MISO changes shortly after each SCK rising edge, and the master sampl
 | 0xA4 | ID | R | 0x53 ("S") |
 | 0xA5 | VERSION | R | ISA version, 0x11 for v1.1 |
 | 0xA6 | RUN_ALL | R/W | RUN for both EMs, bit 1 EM1 and bit 0 EM0, so both start in the same cycle |
+
+| 0xB0 | EAR_CTRL | R/W | Bit 0 EN, bit 1 HOLD. Reads {HELD, PAUSING, HOLD, EN} |
+| 0xB1, 0xB2 | EAR_SEL | R/W | The Ear's 4 pins, 4 bits each (0-11 = B0-B7, M0-M3): pin 0 in 0xB1[3:0], pin 1 in 0xB1[7:4], pin 2 in 0xB2[3:0], pin 3 in 0xB2[7:4] |
+| 0xB3 | EAR_SHIFT | R/W | Hidden-layer requantisation shift, 0-15 |
+| 0xB4 | EAR_MARGIN | R/W | Confidence margin, 0-255 |
+| 0xB5, 0xB6 | EAR_FLOOR | R/W | Out-of-distribution floor, 12-bit signed |
+| 0xB7, 0xB8 | EAR_MIN_EDGES | R/W | Activity gate, 0-256 |
+| 0xB9 | EAR_WEIGHTS | W | Weight chain port: 160 bytes in chain order, while the Ear is disabled and not pausing |
+| 0xBA | EAR_RESULT | R | {VALID, 0, 0, OOD, CONFIDENT, CLASS[2:0]} of the latest window |
+| 0xBB, 0xBC | EAR_BEST | R | The latest window's best logit, 16-bit signed |
+| 0xBD | EAR_WINDOWS | R | Windows classified since reset, wrapping at 256 |
+| 0xBE | EAR_FEATURES | R / W | Read: the next of the 72 features in canonical order. Write: restart at feature 0 |
+| 0xBF | EAR_EDGES | R | Edges in the current or held window, saturating at 255 |
+| 0xC0-0xC7 | EAR_THR | R/W | Hidden-unit thresholds B[0..7], signed bytes |
+
+The Ear's result also drives the output pins: `uo_out[6:4]` is the class, `uo_out[3]` the confident flag and `uo_out[7]` the out-of-distribution flag. The definition, timing and HOLD mode are in ear/SPEC.md.
 
 Per Event Machine (offset from 0x80 or 0x90):
 

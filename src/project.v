@@ -4,14 +4,16 @@
  *
  * Shruti: an event-native protocol emulator ASIC that also listens.
  *
- * Milestone 1: two Event Machines (src/shruti_em.v) behind the shared input path, the
- * 24-bit timestamp counter, the pin drivers and the host SPI (src/shruti_spi.v). Watch
- * and the Ear come later; their output pins read 0 for now.
+ * Two Event Machines (src/shruti_em.v) behind the shared input path, the 24-bit
+ * timestamp counter, the pin drivers, the host SPI (src/shruti_spi.v) and the Ear
+ * (src/shruti_ear.v). Watch comes later; trigger out reads 0 for now.
  *
  * Pins (docs/architecture-spec.md, "I/O plan and host interface"):
  *   ui_in[0..2]  host SPI SCK, MOSI, CS_n        uo_out[0]  host SPI MISO
  *   ui_in[3]     trigger in (unused so far)      uo_out[1]  IRQ: an Event Machine halted
- *   ui_in[4..7]  monitor-only pins M0-M3         uo_out[2..7] trigger out, Ear (0 for now)
+ *   ui_in[4..7]  monitor-only pins M0-M3         uo_out[2]  trigger out (0 for now)
+ *                                                uo_out[3]  Ear confident
+ *                                                uo_out[6:4] Ear class, uo_out[7] Ear OOD
  *   uio[0..7]    bus pins B0-B7, push-pull or open-drain per pin
  *
  * Host register map (8-bit addresses; see docs/host-interface.md):
@@ -31,6 +33,7 @@
  *   0xA2 write: release the pins set in the mask (stop driving them); read: output enables
  *   0xA3 filtered level of B0-B7   0xA4 ID 0x53 ('S')   0xA5 ISA version 0x11
  *   0xA6 RUN for both EMs at once, {EM1, EM0}, so they start in the same cycle
+ *   0xB0-0xC7  the Ear (src/shruti_ear.v, docs/host-interface.md)
  */
 
 `default_nettype none
@@ -96,8 +99,9 @@ module tt_um_gautam1858_shruti (
   reg  [7:0] spi_rdata;
   wire       spi_take;
   wire       spi_miso;
-  wire       spi_port = (spi_raddr[7:5] == 3'b100) &&
-                        (spi_raddr[3:0] == 4'h6 || spi_raddr[3:0] == 4'h7);
+  wire       spi_port = ((spi_raddr[7:5] == 3'b100) &&
+                         (spi_raddr[3:0] == 4'h6 || spi_raddr[3:0] == 4'h7)) ||
+                        spi_raddr == 8'hB9 || spi_raddr == 8'hBE;
 
   shruti_spi u_spi (
       .clk(clk), .rst_n(rst_n),
@@ -173,6 +177,17 @@ module tt_um_gautam1858_shruti (
       .P(P1), .cfg_out(co1), .cfg_in(ci1), .X(X1), .Y(Y1));
 `endif
 
+  // ------------------------------------------------------------------ the Ear
+  wire [7:0] ear_rdata;
+  wire [2:0] ear_cls;
+  wire       ear_conf, ear_ood;
+
+  shruti_ear u_ear (
+      .clk(clk), .rst_n(rst_n), .vis(filt_d), .vis_prev(filt_q),
+      .wr(spi_wr), .waddr(spi_waddr), .wdata(spi_wdata),
+      .raddr(spi_raddr), .rtake(spi_take), .rdata(ear_rdata),
+      .cls(ear_cls), .conf(ear_conf), .ood(ear_ood));
+
   // ------------------------------------------------------------------ pin drivers
   // EM1 wins when both EMs drive a pin in the same cycle. Open-drain: level 0 pulls low,
   // level 1 releases the pin.
@@ -247,12 +262,12 @@ module tt_um_gautam1858_shruti (
       8'hA4: spi_rdata = 8'h53;
       8'hA5: spi_rdata = 8'h11;
       8'hA6: spi_rdata = {6'd0, run};
-      default: spi_rdata = 8'h00;
+      default: spi_rdata = (spi_raddr[7:4] == 4'hB || spi_raddr[7:4] == 4'hC) ? ear_rdata : 8'h00;
     endcase
   end
 
   // ------------------------------------------------------------------ outputs
-  assign uo_out  = {5'd0, 1'b0, halt0 | halt1, spi_miso};
+  assign uo_out  = {ear_ood, ear_cls, ear_conf, 1'b0, halt0 | halt1, spi_miso};
   assign uio_out = pin_out;
   assign uio_oe  = pin_oe;
 
