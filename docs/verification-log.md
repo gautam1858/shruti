@@ -11,7 +11,7 @@ The submission's verification report is built from this log: every defect found,
 | ISS self-checks (event-skipping vs every-cycle mode, logging) | | 3 | | | | 3 |
 | Prover (Z3) | | | 0 | | | 0 |
 | RTL vs ISS differential (cocotb) | | | | 0 | | 0 |
-| Building and measuring (synthesis, timing, datasheets) | 4 | | | | | 4 |
+| Building and measuring (synthesis, timing, datasheets) | 4 | | | 1 | | 5 |
 | Gate-level simulation in CI | | | | | 1 | 1 |
 
 The two zeros are real results. The prover has proved every shipped program and has only rejected variants broken on purpose. The RTL matched the ISS the first time the differential test ran; the failures on the way were in the test harness. Both methods are sharp, going by the mutation results below, so the zeros say the ISS-level work before them was careful, not that the methods are blind.
@@ -25,6 +25,7 @@ Spec / ISA
 - Measuring: the SRAM rule assumed one single-port macro could serve two EMs, the Ear and the recorder at once (spec section 8).
 - Measuring: the die is 0.92 mm2, not 0.7, and the cell budget of 1,000 cells per tile is about half what it holds (spec section 8).
 - Measuring: the per-block cell estimates were about 65% low (program memory 2,921 cells, estimate 1,600).
+- Place and route: the first Event Machine RTL missed 50 MHz at the slow corner by 5.0 ns, then by 2.3 ns; closed on the third run (spec section 8). Counted here as a design finding, not a functional bug.
 
 Firmware (all found by running on the ISS against a peer model)
 - SPI master: two OUTs scheduled at the same T set LATE; fixed with `ADDT 3, now`.

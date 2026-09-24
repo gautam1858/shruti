@@ -58,7 +58,7 @@ In silicon-ready RTL (`src/`), tested in cocotb (`cd test && make`):
 - both Event Machines, the 24-bit timestamp counter, the 12-pin input path with its glitch filter, the pin drivers and the host SPI (`docs/host-interface.md`);
 - checked against the ISS cycle for cycle: 60 random two-EM programs with random pin stimulus and host traffic match in every register, FIFO and pin, every cycle;
 - the UART transmit firmware sends bytes out of pin B0, loaded and started over SPI;
-- first synthesis on the CMOS5L cells: 10,090 cells, about 20% of the 6x4 core (`synth/synth.sh`; spec section 8).
+- through the Tiny Tapeout CMOS5L flow: placed and routed at 28% of the 6x4 core, 50 MHz timing met at the slow, typical and fast corners, precheck and gate-level tests passing (spec section 8).
 
 In Python, with tests (`python -m pytest`):
 - the cycle-accurate ISS (`iss/`), generated from `isa/isa.yaml`;
@@ -67,7 +67,7 @@ In Python, with tests (`python -m pytest`):
 - `shruti prove` (`prove/`): contracts proved for UART transmit (any number of frames), UART receive, SPI master and I2C master, with counterexamples replayed on the ISS where a peer model exists;
 - the Ear (`ear/`): a bit-exact reference checked against the RTL's input path, a protocol simulator, and a first trained model (`ear/REPORT.md`, simulated buses only).
 
-Next: place-and-route timing at 50 MHz for the Event Machines, the Ear and Watch RTL, then integration (29 Nov), FPGA bring-up in December, feature freeze 20 Dec and submission 12 Jan 2027. Built in public in this repo.
+Next: the Ear and Watch RTL, then integration (29 Nov), FPGA bring-up in December, feature freeze 20 Dec and submission 12 Jan 2027. Built in public in this repo.
 
 ## Repository layout
 
