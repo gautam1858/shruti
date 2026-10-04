@@ -26,6 +26,11 @@
  *   program word rewritten while its EM runs takes effect the next time it is fetched.
  * - dT = T - counter is kept in a register and stepped every cycle, so time comparisons
  *   need one adder after a flop instead of two in series.
+ * - The instruction's time operand (d, 2^n or P >> s) is decoded when the word is fetched
+ *   and registered with it, together with its negation, so "the target is now" is an
+ *   equality between two registers and the future test is one carry-select add.
+ * - An RX FIFO push updates the count in its own cycle (the EM and the host see it at once)
+ *   and writes the byte one cycle later; a host read of that slot in between is forwarded.
  */
 
 `default_nettype none
@@ -95,6 +100,9 @@ module shruti_em (
   reg [7:0]  txm0, txm1, txm2, txm3;
   reg [7:0]  rxm0, rxm1, rxm2, rxm3;
   reg [1:0]  tx_rd, rx_rd;
+  reg [1:0]  rxp_n;                    // RX bytes pushed last cycle, written this cycle
+  reg [1:0]  rxp_idx;
+  reg [15:0] rxp_data;
 
   assign flags   = {f_unf, f_ovf, f_late, f_to};
   assign a_seq   = pc + 5'd1;
@@ -108,11 +116,8 @@ module shruti_em (
   wire [2:0]  w_mode = instr[7:5];
   wire [4:0]  w_tmo  = instr[4:0];
   wire [1:0]  o_val  = instr[7:6];
-  wire [5:0]  d6     = instr[5:0];
   wire        i_snap = instr[7];
   wire        a_now  = instr[11];
-  wire [10:0] d11    = instr[10:0];
-  wire [1:0]  a_shift = instr[10:9];
   wire        sh_dir = instr[11];
   wire        sh_msb = instr[10];
   wire        sh_auto = instr[9];
@@ -132,24 +137,34 @@ module shruti_em (
   // ---------------------------------------------------------------- time arithmetic
   // dT = T - cnt. While T_PASSED is clear, T is in the future, so dT is in [1, 2^23).
   wire        tp_eff = tp | (dT == 24'd0);
-  wire [23:0] dT_m1  = dT - 24'd1;
 
-  wire [15:0] p_shr  = P >> a_shift;
-  reg  [23:0] addend;
-  always @* begin
-    case (op)
-      4'd1:    addend = (w_tmo == 5'd0 || w_tmo > 5'd23) ? 24'd0 : (24'd1 << w_tmo);
-      4'd4:    addend = {13'd0, d11};
-      4'd5:    addend = {8'd0, p_shr};
-      default: addend = {18'd0, d6};
-    endcase
-  end
+  // the time operand of a program word, given the P it will see
+  function [23:0] operand(input [15:0] w, input [15:0] pv);
+    begin
+      case (w[15:12])
+        4'd1:    operand = (w[4:0] == 5'd0 || w[4:0] > 5'd23) ? 24'd0 : (24'd1 << w[4:0]);
+        4'd4:    operand = {13'd0, w[10:0]};
+        4'd5:    operand = {8'd0, pv >> w[10:9]};
+        default: operand = {18'd0, w[5:0]};
+      endcase
+    end
+  endfunction
+
+  reg  [23:0] addend;                        // operand(instr, P), registered at fetch
+  reg  [23:0] addend_neg;                    // -addend
   wire [23:0] tgt     = T + addend;          // T + d, T + 2^n or T + delta
-  wire [23:0] dtgt    = dT + addend;         // tgt - cnt
+  wire [23:0] dT_m1   = dT - 24'd1;
+  // dtgt = dT + addend = tgt - cnt. Only its sign is needed, from a carry-select add;
+  // eq_tgt (dtgt == 0) and one_tgt (dtgt == 1) are equalities between registers.
+  wire [12:0] dtgt_lo = {1'b0, dT[11:0]} + {1'b0, addend[11:0]};
+  wire [11:0] dtgt_h0 = dT[23:12] + addend[23:12];
+  wire [11:0] dtgt_h1 = dT[23:12] + addend[23:12] + 12'd1;
+  wire        dtgt_neg = dtgt_lo[12] ? dtgt_h1[11] : dtgt_h0[11];
+  wire        eq_tgt  = (dT == addend_neg);
+  wire        one_tgt = (dT_m1 == addend_neg);
+  wire        fut_tgt = !eq_tgt && !dtgt_neg;
   wire [23:0] dtgt_m1 = dT_m1 + addend;      // tgt - (cnt + 1), dT after T := tgt
   wire [23:0] dadd_m1 = addend - 24'd1;      // dT after T := cnt + addend
-  wire        eq_tgt  = (dtgt == 24'd0);
-  wire        fut_tgt = !eq_tgt && !dtgt[23];
   wire [23:0] cnt_add = cnt + addend;        // ADDT now candidate
 
   // ---------------------------------------------------------------- FIFO views
@@ -171,7 +186,9 @@ module shruti_em (
       default: rx_head_r = rxm3;
     endcase
   end
-  assign rx_head = rx_head_r;
+  // the head may still be in the pending write
+  assign rx_head = (rxp_n != 2'd0 && rx_rd == rxp_idx) ? rxp_data[7:0] :
+                   (rxp_n == 2'd2 && rx_rd == rxp_idx + 2'd1) ? rxp_data[15:8] : rx_head_r;
 
   wire        out_two   = out_n[3];                   // word longer than 8 bits
   wire        in_two    = in_n[3];
@@ -285,7 +302,7 @@ module shruti_em (
                   if (!o_val[0]) n_osr_cnt = osr_cnt_e + 5'd1;
                 end
                 arm_lvl = lvl;
-                if (fut_tgt && dtgt != 24'd1) begin
+                if (fut_tgt && !one_tgt) begin
                   arm = 1'b1;
                 end else begin
                   if (!fut_tgt) n_late = 1'b1;
@@ -475,6 +492,16 @@ module shruti_em (
     end
   end
 
+  // ---------------------------------------------------------------- fetch-side operands
+  // P as it will be next cycle (SET P, then host writes, as in the P register below)
+  wire [15:0] p_nxt   = !rst_n ? 16'd0 :
+                        {p_we_hi ? hdata : (run ? n_P[15:8] : P[15:8]),
+                         p_we_lo ? hdata : (run ? n_P[7:0]  : P[7:0])};
+  wire [23:0] op_seq  = operand(d_seq, p_nxt);
+  wire [23:0] op_jmp  = operand(d_jmp, p_nxt);
+  wire [23:0] neg_seq = 24'd0 - op_seq;
+  wire [23:0] neg_jmp = 24'd0 - op_jmp;
+
   // ---------------------------------------------------------------- FIFO bookkeeping
   wire [2:0] tx_pop_n  = !pull_now ? 3'd0 : (out_two ? 3'd2 : 3'd1);
   wire [2:0] tx_after  = tx_cnt - tx_pop_n;
@@ -483,7 +510,7 @@ module shruti_em (
   wire [2:0] rx_push_n = !push_now ? 3'd0 : (in_two ? 3'd2 : 3'd1);
   wire       rx_take   = rx_pop && (rx_cnt != 3'd0);
   wire [1:0] rx_wr     = rx_rd + rx_cnt[1:0];
-  wire [1:0] rx_wr1    = rx_wr + 2'd1;
+  wire [1:0] rxp_idx1  = rxp_idx + 2'd1;
 
   // ---------------------------------------------------------------- registers
   always @(posedge clk) begin
@@ -492,7 +519,7 @@ module shruti_em (
       out_msb <= 1'b0; autopull <= 1'b0; out_n <= 4'd7;
       in_msb <= 1'b0; autopush <= 1'b0; in_n <= 4'd7;
       tx_cnt <= 3'd0; tx_rd <= 2'd0;
-      rx_cnt <= 3'd0; rx_rd <= 2'd0;
+      rx_cnt <= 3'd0; rx_rd <= 2'd0; rxp_n <= 2'd0; rxp_idx <= 2'd0; rxp_data <= 16'd0;
     end else begin
       // P and CFG: host writes, SET P and SHIFT
       if (run) begin
@@ -516,21 +543,26 @@ module shruti_em (
           default: txm3 <= hdata;
         endcase
       end
-      // RX FIFO: the EM pushes, the host pops
+      // RX FIFO: the EM pushes (count now, bytes next cycle), the host pops
+      rxp_n <= rx_push_n[1:0];
       if (rx_push_n != 3'd0) begin
-        case (rx_wr)
-          2'd0: rxm0 <= push_word[7:0];
-          2'd1: rxm1 <= push_word[7:0];
-          2'd2: rxm2 <= push_word[7:0];
-          default: rxm3 <= push_word[7:0];
+        rxp_idx <= rx_wr;
+        rxp_data <= push_word;
+      end
+      if (rxp_n != 2'd0) begin
+        case (rxp_idx)
+          2'd0: rxm0 <= rxp_data[7:0];
+          2'd1: rxm1 <= rxp_data[7:0];
+          2'd2: rxm2 <= rxp_data[7:0];
+          default: rxm3 <= rxp_data[7:0];
         endcase
       end
-      if (rx_push_n == 3'd2) begin
-        case (rx_wr1)
-          2'd0: rxm0 <= push_word[15:8];
-          2'd1: rxm1 <= push_word[15:8];
-          2'd2: rxm2 <= push_word[15:8];
-          default: rxm3 <= push_word[15:8];
+      if (rxp_n == 2'd2) begin
+        case (rxp_idx1)
+          2'd0: rxm0 <= rxp_data[15:8];
+          2'd1: rxm1 <= rxp_data[15:8];
+          2'd2: rxm2 <= rxp_data[15:8];
+          default: rxm3 <= rxp_data[15:8];
         endcase
       end
       rx_rd  <= rx_rd + {1'b0, rx_take};
@@ -542,6 +574,7 @@ module shruti_em (
     if (!rst_n || !run) begin
       pc <= 5'd0;
       instr <= d_jmp;              // the word at 0
+      addend <= op_jmp; addend_neg <= neg_jmp;
       T <= cnt_p1;                 // so T == counter in the first cycle of a run
       dT <= 24'd0;
       tp <= 1'b1;
@@ -577,6 +610,8 @@ module shruti_em (
       if (done) begin
         pc <= jump ? jtarget : pc + 5'd1;
         instr <= jump ? d_jmp : d_seq;
+        addend <= jump ? op_jmp : op_seq;
+        addend_neg <= jump ? neg_jmp : neg_seq;
         blk <= 1'b0;
         sampled <= 1'b0;
       end else if (!halted && !halt_now) begin

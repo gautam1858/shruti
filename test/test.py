@@ -91,8 +91,19 @@ def probe_em(dut, em):
         "OUT_N": g("out_n"), "OUT_MSB": g("out_msb"), "AUTOPULL": g("autopull"),
         "IN_N": g("in_n"), "IN_MSB": g("in_msb"), "AUTOPUSH": g("autopush"),
         "txd": [g(f"txm{(g('tx_rd') + i) % 4}") for i in range(g("tx_cnt"))],
-        "rxd": [g(f"rxm{(g('rx_rd') + i) % 4}") for i in range(g("rx_cnt"))],
+        "rxd": [rx_slot(g, (g("rx_rd") + i) % 4) for i in range(g("rx_cnt"))],
     }
+
+
+def rx_slot(g, k):
+    """An RX FIFO slot as the host would read it: a push writes its bytes a cycle after it
+    counts them, and the pending bytes are forwarded."""
+    n, idx, data = g("rxp_n"), g("rxp_idx"), g("rxp_data")
+    if n and k == idx:
+        return data & 0xFF
+    if n == 2 and k == (idx + 1) % 4:
+        return data >> 8
+    return g(f"rxm{k}")
 
 
 def iss_em(em):
@@ -278,6 +289,39 @@ async def rx_fifo_two_byte_push_wraps(dut):
     ref = Sim([prog], initial={9: 0}, rx_drain=False, host_rx_pop=pops).run(end)
     assert first == ref.host_rx[0] == [0xFF, 0xFF]
     assert rest == ref.ems[0].rx == [0x00, 0xFF, 0x00]
+
+
+async def push_then_read(chip, n):
+    """EM0 pushes 0x07 at cycle n + 6 while the host reads the RX FIFO. Returns the cycle at
+    which the host's read captures the FIFO head, and the byte it read."""
+    from asm import assemble
+    prog = assemble(f"""
+        WAIT  M0, high
+        IN    M0 @snap
+        IN    M0 @snap
+        IN    M0 @snap
+        SET   X, {n}
+    w:  JMP   X--, w
+        PUSH
+        HALT""")
+    await chip.reset()
+    await chip.setup_em(0, prog)
+    start = await chip.start(0b01)
+    got = await chip.read(EM_BASE[0] + RXPORT)
+    # the read data is captured 3 cycles after the address byte's last SCK edge
+    return chip.first_rises[2] - 8 + 3 - start, got[0]
+
+
+@cocotb.test()
+async def rx_fifo_read_in_the_cycle_after_a_push(dut):
+    """A push writes its byte a cycle after it counts it; a host read that captures the head
+    in between gets the byte by forwarding."""
+    chip = await new_chip(dut)
+    load, _ = await push_then_read(chip, 800)
+    n = load - 7                       # the PUSH executes at n + 6 = load - 1
+    load2, byte = await push_then_read(chip, n)
+    assert load2 == load
+    assert byte == 0x07, f"read {byte:#x}"
 
 
 # -- input filter, seen through an Event Machine ---------------------------------------------
