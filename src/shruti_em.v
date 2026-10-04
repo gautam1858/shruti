@@ -493,9 +493,11 @@ module shruti_em (
   end
 
   // ---------------------------------------------------------------- fetch-side operands
-  // P as it will be next cycle (SET P, then host writes, as in the P register below)
-  wire [15:0] p_nxt   = !rst_n ? 16'd0 :
-                        {p_we_hi ? hdata : (run ? n_P[15:8] : P[15:8]),
+  // P as it will be next cycle (SET P, then host writes, as in the P register below).
+  // No reset term: run is 0 for at least the first cycle after reset, and that
+  // cycle reloads addend from P, which reset has already cleared. Keeping rst_n
+  // out of here keeps the late-arriving reset pin off the operand adder path.
+  wire [15:0] p_nxt   = {p_we_hi ? hdata : (run ? n_P[15:8] : P[15:8]),
                          p_we_lo ? hdata : (run ? n_P[7:0]  : P[7:0])};
   wire [23:0] op_seq  = operand(d_seq, p_nxt);
   wire [23:0] op_jmp  = operand(d_jmp, p_nxt);
