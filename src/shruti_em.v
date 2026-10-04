@@ -494,9 +494,6 @@ module shruti_em (
 
   // ---------------------------------------------------------------- fetch-side operands
   // P as it will be next cycle (SET P, then host writes, as in the P register below).
-  // No reset term: run is 0 for at least the first cycle after reset, and that
-  // cycle reloads addend from P, which reset has already cleared. Keeping rst_n
-  // out of here keeps the late-arriving reset pin off the operand adder path.
   wire [15:0] p_nxt   = {p_we_hi ? hdata : (run ? n_P[15:8] : P[15:8]),
                          p_we_lo ? hdata : (run ? n_P[7:0]  : P[7:0])};
   wire [23:0] op_seq  = operand(d_seq, p_nxt);
@@ -572,11 +569,26 @@ module shruti_em (
     end
   end
 
+  // The fetched word and its time operand. While stopped they hold word 0 and are
+  // reloaded every cycle; run is cleared by reset, so this also covers reset (one
+  // cycle in, with P already zero). rst_n is deliberately not used here: synthesis
+  // shares one negator between the jump and sequential operands behind a mux, and
+  // a reset term in that mux's select put the reset pin and its fanout tree in
+  // front of the 24-bit subtract.
+  always @(posedge clk) begin
+    if (!run) begin
+      instr <= d_jmp;              // the word at 0
+      addend <= op_jmp; addend_neg <= neg_jmp;
+    end else if (done) begin
+      instr <= jump ? d_jmp : d_seq;
+      addend <= jump ? op_jmp : op_seq;
+      addend_neg <= jump ? neg_jmp : neg_seq;
+    end
+  end
+
   always @(posedge clk) begin
     if (!rst_n || !run) begin
       pc <= 5'd0;
-      instr <= d_jmp;              // the word at 0
-      addend <= op_jmp; addend_neg <= neg_jmp;
       T <= cnt_p1;                 // so T == counter in the first cycle of a run
       dT <= 24'd0;
       tp <= 1'b1;
@@ -611,9 +623,6 @@ module shruti_em (
       if (halt_now) halted <= 1'b1;
       if (done) begin
         pc <= jump ? jtarget : pc + 5'd1;
-        instr <= jump ? d_jmp : d_seq;
-        addend <= jump ? op_jmp : op_seq;
-        addend_neg <= jump ? neg_jmp : neg_seq;
         blk <= 1'b0;
         sampled <= 1'b0;
       end else if (!halted && !halt_now) begin

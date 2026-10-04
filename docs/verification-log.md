@@ -27,6 +27,7 @@ Spec / ISA
 - Measuring: the die is 0.92 mm2, not 0.7, and the cell budget of 1,000 cells per tile is about half what it holds (spec section 8).
 - Measuring: the per-block cell estimates were about 65% low (program memory 2,921 cells, estimate 1,600).
 - Place and route: the first Event Machine RTL missed 50 MHz at the slow corner by 5.0 ns, then by 2.3 ns; closed on the third run (spec section 8). Counted here as a design finding, not a functional bug.
+- Place and route with the Ear: the slow corner failed only on paths from the rst_n pin into the Event Machine's operand negator. The first fix missed the real cause, which the synthesised netlist showed: a reset term in the select of a multiplexer that synthesis had placed in front of a shared subtractor. Found by reading the timing report and tracing the cells back to RTL names; the check that confirmed the fix is a longest-path count from rst_n over the netlist (22 cell levels before, 8 after). A design finding, not a functional bug.
 
 Firmware (all found by running on the ISS against a peer model)
 - SPI master: two OUTs scheduled at the same T set LATE; fixed with `ADDT 3, now`.
