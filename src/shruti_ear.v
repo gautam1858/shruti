@@ -12,12 +12,17 @@
  * bit is set.
  *
  * Pause schedule (648 cycles, p = 0..647):
- *   p = 0..6    four restoring dividers, one per pin, give floor(64 * high / length)
- *   p = 7       the pins are ranked by (edge feature, time-high feature), largest first,
+ *   p = 0       load four dividers, one per pin, for min(63, floor(64 * high / length))
+ *   p = 1..3    radix-4 restoring division, two quotient bits per cycle
+ *   p = 4       the pins are ranked by (edge feature, time-high feature), largest first,
  *               ties by pin number (canonical order)
- *   p = 8..647  one ternary weight per cycle into one 16-bit accumulator: 576 for layer 1,
- *               64 for layer 2, with the argmax folded into layer 2 as each output completes
- * The class, confidence and out-of-distribution flags change at the end of p = 647.
+ *   p = 5..644  fetch: the next multiply's input (a feature, or a hidden unit in layer 2)
+ *               goes into a register
+ *   p = 6..645  multiply: one ternary weight per cycle into one 16-bit accumulator, 576
+ *               for layer 1 and 64 for layer 2
+ *   p = 646     the argmax takes the last output; earlier outputs are taken as they finish
+ *   p = 647     the class, confidence and out-of-distribution flags are set
+ * The flags change at the end of p = 647.
  *
  * With HOLD set, the Ear stops after the pause with the window's counters intact, so the
  * host can read the 72 features through the FEATURE port. Clearing HOLD clears the counters
@@ -83,8 +88,9 @@ module shruti_ear (
   reg [16:0] high   [0:3];
   reg [15:0] since  [0:3];
   reg        has_last[0:3];
-  reg [17:0] rem    [0:3];           // divider remainder
-  reg [6:0]  quo    [0:3];
+  reg [17:0] rem    [0:3];           // divider remainder, always below the length
+  reg [5:0]  quo    [0:3];           // quotient bits so far
+  reg [18:0] len3;                   // 3 x length
   // per ordered pair, index 4a + b (diagonal unused)
   reg [5:0]  near   [0:15];
   reg [5:0]  hi     [0:15];
@@ -158,6 +164,10 @@ module shruti_ear (
   reg [2:0]  bin;
   reg [47:0] sh;
   reg [5:0]  suf [0:7];
+  reg [8:0]  x0 [0:7];
+  reg [8:0]  x1 [0:7];
+  reg [8:0]  x2 [0:7];
+  reg [8:0]  x3 [0:7];
   integer pn, k;
   always @* begin
     k = 0;
@@ -170,9 +180,13 @@ module shruti_ear (
       code = pd_code[pn];
       h = code[5:1];
       sc = pd_sc[pn];
-      suf[7] = hist[pn][42 +: 6];
-      for (k = 6; k >= 0; k = k - 1)
-        suf[k] = sat_add6(suf[k + 1], hist[pn][6*k +: 6]);
+      // suffix sums by parallel prefix (3 adder levels, not 7 in series); a saturating sum
+      // of non-negative counts is min(63, the exact sum), so saturate once at the end
+      for (k = 0; k < 8; k = k + 1) x0[k] = {3'd0, hist[pn][6*k +: 6]};
+      for (k = 0; k < 8; k = k + 1) x1[k] = (k < 7) ? x0[k] + x0[k + 1] : x0[k];
+      for (k = 0; k < 8; k = k + 1) x2[k] = (k < 6) ? x1[k] + x1[k + 2] : x1[k];
+      for (k = 0; k < 8; k = k + 1) x3[k] = (k < 4) ? x2[k] + x2[k + 4] : x2[k];
+      for (k = 0; k < 8; k = k + 1) suf[k] = (x3[k] > 9'd63) ? 6'd63 : x3[k][5:0];
       sh = hist[pn];
       dd = 5'd0; bin = 3'd0;
       if (counting && edg[pn] && has_last[pn]) begin
@@ -241,14 +255,14 @@ module shruti_ear (
   wire [9:0] ecount = {1'b0, nedges} + {7'd0, nnow};
   wire       close  = counting && (ecount >= 10'd256 || wlen == 17'h0FFFF);
 
-  // ------------------------------------------------------------------ canonical rank (p = 7)
+  // ------------------------------------------------------------------ canonical rank (p = 4)
   wire [5:0] fe   [0:3];             // edge feature: saturated 8-bit count, top 6 bits
   wire [5:0] fh   [0:3];             // time-high feature
   genvar g;
   generate
     for (g = 0; g < 4; g = g + 1) begin : g_feat
       assign fe[g] = nedg[g][7:2];
-      assign fh[g] = (quo[g] > 7'd63) ? 6'd63 : quo[g][5:0];
+      assign fh[g] = quo[g];             // high = length gives digits 3, 3, 3: 63
     end
   endgenerate
 
@@ -269,11 +283,11 @@ module shruti_ear (
   // ------------------------------------------------------------------ feature read
   // Feature index as (fs, ft): fs 0..3 pin slot with ft 0..11 its feature, fs 4 near and
   // fs 5 hi with ft the canonical pair (0,1) (0,2) (0,3) (1,0) ... (3,2).
-  reg  [2:0] mfs, hfs;               // multiply and host counters
+  reg  [2:0] mfs, hfs;               // fetch and host counters
   reg  [3:0] mft, hft;
-  wire       mac = state == S_PAUSE && p >= 10'd8;
-  wire [2:0] fs = mac ? mfs : hfs;
-  wire [3:0] ft = mac ? mft : hft;
+  reg        fe_act, mac_act;        // fetch stage (p = 5..644), multiply stage (6..645)
+  wire [2:0] fs = fe_act ? mfs : hfs;
+  wire [3:0] ft = fe_act ? mft : hft;
 
   reg [5:0] feat;
   reg [1:0] pin, ca, cb, pa, pb;
@@ -303,29 +317,59 @@ module shruti_ear (
   // ------------------------------------------------------------------ multiply-accumulate
   reg [1279:0] chain;
   reg [63:0]   hid;                  // hidden units, 8 bits each
-  reg [2:0]    mj, mk, mjj;          // layer 1 unit; layer 2 output and input
+  reg [2:0]    mj, mk, mjj;          // fetch: layer 1 unit; layer 2 output and input
   reg          layer2;
+  // fetch -> multiply registers
+  reg [7:0]    xr;                   // the input: a feature (6 bits) or a hidden unit
+  reg          x_first, x_last, x_l2;
+  reg [2:0]    x_j, x_k;
+  // multiply -> argmax registers
+  reg signed [15:0] o_r;
+  reg [2:0]    o_k;
+  reg          o_v;
   reg signed [15:0] acc, best, second;
   reg [2:0]    bestk;
 
+  // fetch stage
+  wire       f_first = layer2 ? (mjj == 3'd0) : (mfs == 3'd0 && mft == 4'd0);
+  wire       f_last  = layer2 ? (mjj == 3'd7) : (mfs == 3'd5 && mft == 4'd11);
+  wire [7:0] f_x     = layer2 ? hid[8*mjj +: 8] : {2'd0, feat};
+
+  // multiply stage
   wire [1:0] wcode = chain[1:0];
-  wire signed [15:0] xin = layer2 ? {8'd0, hid[8*mjj +: 8]} : {10'd0, feat};
-  wire first = layer2 ? (mjj == 3'd0) : (mfs == 3'd0 && mft == 4'd0);
-  wire last  = layer2 ? (mjj == 3'd7) : (mfs == 3'd5 && mft == 4'd11);
-  wire signed [15:0] base = first ? (layer2 ? 16'sd0 : {{8{thr[8*mj + 7]}}, thr[8*mj +: 8]}) : acc;
+  wire signed [15:0] xin  = {8'd0, xr};
+  wire signed [15:0] base = x_first ? (x_l2 ? 16'sd0 : {{8{thr[8*x_j + 7]}}, thr[8*x_j +: 8]}) : acc;
   wire signed [15:0] term = (wcode == 2'b01) ? xin : (wcode == 2'b11) ? -xin : 16'sd0;
   wire signed [15:0] sum  = base + term;
   wire [15:0] relu = sum[15] ? 16'd0 : (sum >>> shift);
   wire [7:0]  hval = (relu > 16'd255) ? 8'd255 : relu[7:0];
 
-  // argmax as each layer-2 output completes (lowest k wins ties)
-  wire               k0      = mk == 3'd0;
-  wire               better  = k0 || sum > best;
-  wire signed [15:0] n_best  = better ? sum : best;
-  wire signed [15:0] n_sec   = k0 ? -16'sd32768 : better ? best : (sum > second ? sum : second);
-  wire [2:0]         n_bestk = better ? mk : bestk;
-  wire signed [15:0] gap     = n_best - n_sec;
+  // argmax stage: a cycle after each layer-2 output completes (lowest k wins ties)
+  wire               k0      = o_k == 3'd0;
+  wire               better  = k0 || o_r > best;
+  wire signed [15:0] n_best  = better ? o_r : best;
+  wire signed [15:0] n_sec   = k0 ? -16'sd32768 : better ? best : (o_r > second ? o_r : second);
+  wire [2:0]         n_bestk = better ? o_k : bestk;
+  wire signed [15:0] gap     = best - second;
   wire signed [15:0] floor_x = {{4{floor_[11]}}, floor_};
+
+  // radix-4 division step: four times the remainder against 1, 2 and 3 lengths
+  reg [19:0] r4, s1, s2, s3;
+  reg [1:0]  dig [0:3];
+  reg [17:0] n_rem [0:3];
+  integer dq;
+  always @* begin
+    for (dq = 0; dq < 4; dq = dq + 1) begin
+      r4 = {rem[dq], 2'b00};
+      s1 = r4 - {3'd0, wlen};
+      s2 = r4 - {2'd0, wlen, 1'b0};
+      s3 = r4 - {1'b0, len3};
+      if (!s3[19])      begin dig[dq] = 2'd3; n_rem[dq] = s3[17:0]; end
+      else if (!s2[19]) begin dig[dq] = 2'd2; n_rem[dq] = s2[17:0]; end
+      else if (!s1[19]) begin dig[dq] = 2'd1; n_rem[dq] = s1[17:0]; end
+      else              begin dig[dq] = 2'd0; n_rem[dq] = r4[17:0]; end
+    end
+  end
 
   // ------------------------------------------------------------------ weight loading
   reg [7:0] ldbyte;
@@ -368,10 +412,13 @@ module shruti_ear (
       hfs <= 3'd0; hft <= 4'd0; ldn <= 3'd0; ldbyte <= 8'd0;
       mfs <= 3'd0; mft <= 4'd0; mj <= 3'd0; mk <= 3'd0; mjj <= 3'd0; layer2 <= 1'b0;
       acc <= 16'sd0; best <= 16'sd0; second <= 16'sd0; bestk <= 3'd0; hid <= 64'd0;
+      fe_act <= 1'b0; mac_act <= 1'b0; xr <= 8'd0; x_first <= 1'b0; x_last <= 1'b0;
+      x_l2 <= 1'b0; x_j <= 3'd0; x_k <= 3'd0; o_r <= 16'sd0; o_k <= 3'd0; o_v <= 1'b0;
+      len3 <= 19'd0;
       for (r = 0; r < 4; r = r + 1) begin
         hist[r] <= 48'd0; min_h[r] <= 5'd0; has_min[r] <= 1'b0; min_c[r] <= 6'd63;
         max_c[r] <= 6'd0; nedg[r] <= 8'd0; high[r] <= 17'd0; since[r] <= 16'd0;
-        has_last[r] <= 1'b0; rem[r] <= 18'd0; quo[r] <= 7'd0;
+        has_last[r] <= 1'b0; rem[r] <= 18'd0; quo[r] <= 6'd0;
         pd_code[r] <= 6'd0; pd_lt[r] <= 1'b0; pd_sc[r] <= 4'd0; pd_dd[r] <= 5'd0;
         pd_maxr[r] <= 1'b0; pd_clt[r] <= 1'b1; pd_cgt[r] <= 1'b0;
       end
@@ -450,30 +497,33 @@ module shruti_ear (
         end
       end
 
-      // pause: divide, rank, multiply
+      // pause: divide, rank, fetch, multiply, argmax
+      fe_act <= state == S_PAUSE && p >= 10'd4 && p <= 10'd643;
+      mac_act <= fe_act;
+      o_v <= 1'b0;
       if (state == S_PAUSE) begin
         p <= p + 10'd1;
-        if (p <= 10'd6) begin
+        if (p == 10'd0) begin
+          len3 <= {2'd0, wlen} + {1'b0, wlen, 1'b0};
           for (r = 0; r < 4; r = r + 1) begin
-            if (((p == 10'd0) ? {1'b0, high[r]} : rem[r]) >= {1'b0, wlen}) begin
-              rem[r] <= (((p == 10'd0) ? {1'b0, high[r]} : rem[r]) - {1'b0, wlen}) << 1;
-              quo[r] <= {((p == 10'd0) ? 6'd0 : quo[r][5:0]), 1'b1};
-            end else begin
-              rem[r] <= ((p == 10'd0) ? {1'b0, high[r]} : rem[r]) << 1;
-              quo[r] <= {((p == 10'd0) ? 6'd0 : quo[r][5:0]), 1'b0};
-            end
+            rem[r] <= {1'b0, high[r]};
+            quo[r] <= 6'd0;
           end
         end
-        if (p == 10'd7) begin
+        if (p >= 10'd1 && p <= 10'd3) begin
+          for (r = 0; r < 4; r = r + 1) begin
+            rem[r] <= n_rem[r];
+            quo[r] <= {quo[r][3:0], dig[r]};
+          end
+        end
+        if (p == 10'd4) begin
           ord <= n_ord;
           mfs <= 3'd0; mft <= 4'd0; mj <= 3'd0; mk <= 3'd0; mjj <= 3'd0; layer2 <= 1'b0;
         end
-        if (mac) begin
-          chain <= {chain[1:0], chain[1279:2]};
-          acc <= sum;
+        if (fe_act) begin
+          xr <= f_x; x_first <= f_first; x_last <= f_last; x_l2 <= layer2; x_j <= mj; x_k <= mk;
           if (!layer2) begin
-            if (last) begin
-              hid[8*mj +: 8] <= hval;
+            if (f_last) begin
               mfs <= 3'd0; mft <= 4'd0;
               mj <= mj + 3'd1;
               if (mj == 3'd7) layer2 <= 1'b1;
@@ -484,18 +534,26 @@ module shruti_ear (
             end
           end else begin
             mjj <= mjj + 3'd1;
-            if (last) begin
-              best <= n_best; second <= n_sec; bestk <= n_bestk;
-              mk <= mk + 3'd1;
-              if (mk == 3'd7) begin
-                cls <= n_bestk;
-                conf <= gap >= $signed({8'd0, margin});
-                ood <= n_best < floor_x || nedges < min_edges;
-                valid <= 1'b1;
-                nwin <= nwin + 8'd1;
-              end
-            end
+            if (f_last) mk <= mk + 3'd1;
           end
+        end
+        if (mac_act) begin
+          chain <= {chain[1:0], chain[1279:2]};
+          acc <= sum;
+          if (x_last && !x_l2) hid[8*x_j +: 8] <= hval;
+          if (x_last && x_l2) begin
+            o_r <= sum; o_k <= x_k; o_v <= 1'b1;
+          end
+        end
+        if (o_v) begin
+          best <= n_best; second <= n_sec; bestk <= n_bestk;
+        end
+        if (p == 10'd647) begin
+          cls <= bestk;
+          conf <= gap >= $signed({8'd0, margin});
+          ood <= best < floor_x || nedges < min_edges;
+          valid <= 1'b1;
+          nwin <= nwin + 8'd1;
         end
       end
 

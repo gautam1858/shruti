@@ -45,7 +45,7 @@ The Ear sees the same filtered pin levels as the Event Machines: the two-flop sy
 - **Features 48-59, near[a][b]** (6-bit saturating): b edges no more than 4 cycles after the latest a edge in the window, including an a edge in the same cycle.
 - **Features 60-71, hi[a][b]** (6-bit saturating): b edges while a's filtered level is high, including a change of a in that same cycle.
 
-**(resolved) Time-high fraction.** The spec gives no divider. The fraction needs one division per pin per window: floor(64 x high / length), with length up to 65,536. The RTL uses four restoring dividers, one per pin, 7 steps each, in the first 7 cycles of the pause. An earlier version of this document said one serial divider (6 cycles per pin) fits inside the 648 cycles. It does not: the canonical sort needs every pin's fraction before the first multiply, and the multiplies alone take 640 of the 648 cycles.
+**(resolved) Time-high fraction.** The spec gives no divider. The fraction needs one division per pin per window: floor(64 x high / length), with length up to 65,536. The RTL uses four radix-4 restoring dividers, one per pin: loaded in the first pause cycle, then two quotient bits per cycle for three cycles. A pin high for the whole window gives digits 3, 3, 3, which is the saturated 63 with no special case. An earlier version of this document said one serial divider (6 cycles per pin) fits inside the 648 cycles. It does not: the canonical sort needs every pin's fraction before the first multiply, and the multiplies alone take 640 of the 648 cycles.
 
 **(resolved) Every feature is 6 bits.** The v1.0 spec had 8-bit edge counts and time-high fractions next to 6-bit counters. With ternary weights a feature cannot be scaled down, so the two 8-bit features dominated the dot products. Dropping their 2 low bits raised the integer model's test accuracy from about 80% to about 88% on simulated data (ear/REPORT.md has the current numbers), and it costs nothing.
 
@@ -67,10 +67,13 @@ ood   = best < FLOOR  or  window edges < MIN_EDGES
 
 | Pause cycles | Work |
 | --- | --- |
-| 0-6 | the four dividers |
-| 7 | the canonical rank |
-| 8-583 | layer 1, 576 weights; the ReLU and shift happen as each hidden unit completes |
-| 584-647 | layer 2, 64 weights; the argmax is folded in as each output completes |
+| 0-3 | the four dividers |
+| 4 | the canonical rank |
+| 5-644 | fetch: the next multiply's input (a feature, or a hidden unit in layer 2) goes into a register |
+| 6-581 | layer 1, 576 weights; the ReLU and shift happen as each hidden unit completes |
+| 582-645 | layer 2, 64 weights |
+| 590-646 | the argmax takes each output the cycle after it completes (every 8 cycles) |
+| 647 | the class and flags are set |
 
 The class and flags change at the end of the last pause cycle. The Python model counts the pause as 576 + 64 + 8 cycles; only the total, and so the window boundaries, has to match.
 
