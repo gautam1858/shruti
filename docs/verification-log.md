@@ -70,6 +70,17 @@ RTL (src/shruti_em.v), each planted alone, against the cocotb suite:
 
 The two FIFO bugs were first missed by the random test, which is why the directed tests exist.
 
+Timing restructure of the EM (registered operand, carry-select future test, delayed RX byte write), against the same suite:
+
+| Planted bug | Caught by |
+| --- | --- |
+| Operand of the next word decoded with the old P (SET P then ADDT P) | random differential (T) |
+| "Due next cycle" compared against the wrong register | random differential (registers) |
+| Carry-select sign ignores the low half's carry | random differential (LATE) |
+| Pending RX byte not forwarded to a host read | directed test (rx_fifo_read_in_the_cycle_after_a_push) |
+
+The forwarding bug passed every random case: no random host read lands in the one cycle that matters, which is why that directed test exists.
+
 Ear RTL (src/shruti_ear.v), against the `ear_` tests:
 
 | Planted bug | Caught by |
@@ -86,5 +97,14 @@ Ear RTL (src/shruti_ear.v), against the `ear_` tests:
 | Divider compares with > instead of >= | window-by-window (high time L / 2) |
 | Divisor one less, and one more, than the length | window-by-window (tuned high times) |
 | Pause one cycle short | class-level (result timing) |
+
+Restructured Ear pause (radix-4 dividers, fetch stage, argmax stage):
+
+| Planted bug | Caught by |
+| --- | --- |
+| Divider never picks digit 3 | class-level (confidence) |
+| Divider's 2 x length off by one | class-level |
+| Argmax stage prefers the later class on a tie | window-by-window ("delayed") |
+| The "pin always high" special case removed | not caught: equivalent (digits 3, 3, 3 already give 63), so the special case was deleted |
 
 The divider and rank mutants passed every class-level test at first. The "delayed" windows, with pin 3's high time tuned to each divider corner, were written to catch them, and on their first run they found the real divisor bug above. Firmware mutations against the prover (level wait, SDA changing with the SCL fall, inverted ACK, broken UART variants) are in prove/tests.
