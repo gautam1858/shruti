@@ -27,8 +27,9 @@
  * - dT = T - counter is kept in a register and stepped every cycle, so time comparisons
  *   need one adder after a flop instead of two in series.
  * - The instruction's time operand (d, 2^n or P >> s) is decoded when the word is fetched
- *   and registered with it, together with its negation, so "the target is now" is an
- *   equality between two registers and the future test is one carry-select add.
+ *   and registered with it. "The target is now" (dT + d == 0) and "one cycle away"
+ *   (dT + d == 1) are tested without any add, bit by bit; the future test is one
+ *   carry-select add.
  * - An RX FIFO push updates the count in its own cycle (the EM and the host see it at once)
  *   and writes the byte one cycle later; a host read of that slot in between is forwarded.
  */
@@ -151,17 +152,20 @@ module shruti_em (
   endfunction
 
   reg  [23:0] addend;                        // operand(instr, P), registered at fetch
-  reg  [23:0] addend_neg;                    // -addend
   wire [23:0] tgt     = T + addend;          // T + d, T + 2^n or T + delta
   wire [23:0] dT_m1   = dT - 24'd1;
   // dtgt = dT + addend = tgt - cnt. Only its sign is needed, from a carry-select add;
-  // eq_tgt (dtgt == 0) and one_tgt (dtgt == 1) are equalities between registers.
+  // eq_tgt (dtgt == 0) and one_tgt (dtgt == 1) need no add at all: A + B == K holds
+  // exactly when, bit by bit, A ^ B ^ K equals the carry that K demands from the bit
+  // below, which for K = 0 is (A | B) and for K = 1 is (A & B) at bit 0, then (A | B).
   wire [12:0] dtgt_lo = {1'b0, dT[11:0]} + {1'b0, addend[11:0]};
   wire [11:0] dtgt_h0 = dT[23:12] + addend[23:12];
   wire [11:0] dtgt_h1 = dT[23:12] + addend[23:12] + 12'd1;
   wire        dtgt_neg = dtgt_lo[12] ? dtgt_h1[11] : dtgt_h0[11];
-  wire        eq_tgt  = (dT == addend_neg);
-  wire        one_tgt = (dT_m1 == addend_neg);
+  wire [23:0] da_x    = dT ^ addend;
+  wire [23:0] da_o    = dT | addend;
+  wire        eq_tgt  = (da_x == {da_o[22:0], 1'b0});
+  wire        one_tgt = (da_x == {da_o[22:1], dT[0] & addend[0], 1'b1});
   wire        fut_tgt = !eq_tgt && !dtgt_neg;
   wire [23:0] dtgt_m1 = dT_m1 + addend;      // tgt - (cnt + 1), dT after T := tgt
   wire [23:0] dadd_m1 = addend - 24'd1;      // dT after T := cnt + addend
@@ -498,8 +502,6 @@ module shruti_em (
                          p_we_lo ? hdata : (run ? n_P[7:0]  : P[7:0])};
   wire [23:0] op_seq  = operand(d_seq, p_nxt);
   wire [23:0] op_jmp  = operand(d_jmp, p_nxt);
-  wire [23:0] neg_seq = 24'd0 - op_seq;
-  wire [23:0] neg_jmp = 24'd0 - op_jmp;
 
   // ---------------------------------------------------------------- FIFO bookkeeping
   wire [2:0] tx_pop_n  = !pull_now ? 3'd0 : (out_two ? 3'd2 : 3'd1);
@@ -571,18 +573,19 @@ module shruti_em (
 
   // The fetched word and its time operand. While stopped they hold word 0 and are
   // reloaded every cycle; run is cleared by reset, so this also covers reset (one
-  // cycle in, with P already zero). rst_n is deliberately not used here: synthesis
-  // shares one negator between the jump and sequential operands behind a mux, and
-  // a reset term in that mux's select put the reset pin and its fanout tree in
-  // front of the 24-bit subtract.
+  // cycle in, with P already zero). rst_n is deliberately not used here, so the
+  // reset pin and its fanout tree stay out of the operand path.
+  // The choice between the jump and sequential words is an AND-OR rather than a
+  // mux on purpose: with a mux, synthesis proves the two program-memory reads are
+  // never both needed and merges them into one read port behind an address mux,
+  // which puts the whole decode (done, jump) in front of the memory read.
+  wire        take_j  = !run || jump;
+  wire [15:0] w_next  = (d_jmp  & {16{take_j}}) | (d_seq  & {16{!take_j}});
+  wire [23:0] op_next = (op_jmp & {24{take_j}}) | (op_seq & {24{!take_j}});
   always @(posedge clk) begin
-    if (!run) begin
-      instr <= d_jmp;              // the word at 0
-      addend <= op_jmp; addend_neg <= neg_jmp;
-    end else if (done) begin
-      instr <= jump ? d_jmp : d_seq;
-      addend <= jump ? op_jmp : op_seq;
-      addend_neg <= jump ? neg_jmp : neg_seq;
+    if (!run || done) begin
+      instr <= w_next;             // the word at 0 while stopped
+      addend <= op_next;
     end
   end
 
