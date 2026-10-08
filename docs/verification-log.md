@@ -14,8 +14,10 @@ The submission's verification report is built from this log: every defect found,
 | Ear RTL vs the Python reference (cocotb) | 1 | | | 1 | | 2 |
 | Building and measuring (synthesis, timing, datasheets) | 4 | | | 1 | | 5 |
 | Gate-level simulation (CI, and locally on the Yosys netlist) | | | | 1 | 1 | 2 |
+| Formal properties of the Event Machine (SymbiYosys, 8 Oct) | | | | 0 | | 0 |
+| Audit of README, spec and datasheet claims against the evidence (5-8 Oct) | 10 | | | | | 10 |
 
-The two zeros are real results. The prover has proved every shipped program and has only rejected variants broken on purpose. The Event Machine RTL matched the ISS the first time the differential test ran; the failures on the way were in the test harness. The Ear RTL did not: its first version passed every class-level test but divided by the wrong length, which only the feature readback caught (below). Both methods are sharp, going by the mutation results below, so the zeros say the ISS-level work before them was careful, not that the methods are blind.
+The two zeros are real results. The prover has proved every shipped program and has only rejected variants broken on purpose. The Event Machine RTL matched the ISS the first time the differential test ran; the failures on the way were in the test harness. The Ear RTL did not: its first version passed every class-level test but divided by the wrong length, which only the feature readback caught (below). Both methods are sharp, going by the mutation results below, so the zeros say the ISS-level work before them was careful, not that the methods are blind. The formal zero is the third of its kind: the 27 Event Machine properties held on the existing RTL the first time they closed, and 31 planted bugs show they are not blind (below).
 
 ## Entries
 
@@ -29,6 +31,23 @@ Spec / ISA
 - Place and route: the first Event Machine RTL missed 50 MHz at the slow corner by 5.0 ns, then by 2.3 ns; closed on the third run (spec section 8). Counted here as a design finding, not a functional bug.
 - Place and route with the Ear: the slow corner failed only on paths from the rst_n pin into the Event Machine's operand negator. The first fix missed the real cause, which the synthesised netlist showed: a reset term in the select of a multiplexer that synthesis had placed in front of a shared subtractor. Found by reading the timing report and tracing the cells back to RTL names; the check that confirmed the fix is a longest-path count from rst_n over the netlist (22 cell levels before, 8 after). A design finding, not a functional bug.
 - Place and route, third run: the remaining slow-corner paths came from synthesis merging each Event Machine's two program-memory reads into one port (and two shifters into one), reported in the Yosys log by its resource-sharing pass. Found by mapping the post-route timing report's cells back to the synthesis netlist and seeing the RX register depend on the program memory, which the RTL does not do. The carry-free comparators that replaced the negated operand were mutation-tested (a wrong carry term at bit 1 of the "one cycle away" test, and a dropped bit in the "now" test): the RTL-vs-ISS differential test catches both. A design finding, not a functional bug.
+
+Docs (audit of the claims against the evidence, 5 Oct; fixed 8 Oct)
+- SymbiYosys properties on the scheduler, capture and FIFOs were described as part of the verification; none existed. 27 Event Machine properties now do; capture is still planned.
+- "The RTL is tied to the ISS by bounded formal equivalence": not built; the link is differential testing plus the properties.
+- `shruti load` "refuses an unproven program", and `shruti teach`: neither command exists yet.
+- An FPGA prototype "proven against" real devices, with a badge for a workflow that never ran: no FPGA build exists.
+- The Ear "flags traffic it does not recognise": the out-of-distribution flag misses foreign and held-out traffic (ear/REPORT.md).
+- "A 9600-baud UART and a 1-Mbaud UART produce the same interval histogram": true of the features, but at 9,600 baud a window holds about 6 edges and is gated.
+- "An LLM red team whose bug yield is measured": planned, not measured.
+- "Every protocol program ships with a machine-checked proof": the SPI slave does not have one.
+- Stale numbers: ~10,900 cells estimated (27,789 synthesised), 28% utilisation (68.6%), and "Next: the Ear" after the Ear was built.
+- "Firmware library with cocotb tests against bus models": the firmware is tested on the ISS against peer models; only UART transmit runs on the RTL.
+
+Ear evaluation beyond the test set (ear/evaluate.py, 8 Oct). Design findings, not bugs; ear/REPORT.md has the numbers.
+- Slow buses get no answer: a window closes after 65,536 cycles, so UARTs at 19,200 baud and slower are gated on 96-100% of windows. Found by counting the windows dataset.build drops.
+- Fast UARTs are classified CAN on 84-95% of answered windows from 115,200 baud up; a float network on the same features reaches 83% UART recall against the integer model's 19%, so this is training, not features.
+- The out-of-distribution flag misses foreign signals and held-out classes; the prototype-distance alternative flags 15% of held-out JTAG/SWD at 5% false alarms. The confident flag is the signal to trust, though it fires on 6% of WS2812 windows when the unused pins idle low and on 43% of held-out JTAG/SWD (as SPI).
 
 Firmware (all found by running on the ISS against a peer model)
 - SPI master: two OUTs scheduled at the same T set LATE; fixed with `ADDT 3, now`.
@@ -110,3 +129,5 @@ Restructured Ear pause (radix-4 dividers, fetch stage, argmax stage):
 | The "pin always high" special case removed | not caught: equivalent (digits 3, 3, 3 already give 63), so the special case was deleted |
 
 The divider and rank mutants passed every class-level test at first. The "delayed" windows, with pin 3's high time tuned to each divider corner, were written to catch them, and on their first run they found the real divisor bug above. Firmware mutations against the prover (level wait, SDA changing with the SCL fall, inverted ACK, broken UART variants) are in prove/tests.
+
+Formal properties of the Event Machine (verify/mutate.py, 8 Oct): 31 planted bugs in src/shruti_em.v, each run through the bounded check (em.sby, task bmc). All 31 give a counterexample, and each of the 27 properties is the first to fail for at least one of them. The table, with the failing property and the time for each, is in verify/README.md.
