@@ -194,6 +194,13 @@ Third run, 4 Oct 2026 (commit 25841fc): no path from rst_n fails any more. Slow 
 
 Fourth run, 5 Oct 2026 (commit 0beaee3): timing at 50 MHz closes at all three corners with margin. Setup slack +4.24 ns at slow (1.08 V, 125 C), +9.63 ns at typical and +11.79 ns at fast; no setup or hold violations (worst hold slack +0.05 ns). 619,000 um2 of standard cells, 69% utilisation, of which 113,000 um2 are timing-repair buffers; 0 DRC and 0 antenna violations; 10 max-slew and 1 max-cap warnings; power about 16 mW. The gate-level test in the GDS action passes on the routed netlist. So Event Machines, program memory, input path, host SPI and the Ear fit the 6x4 die at 50 MHz, with 4 ns of slow-corner margin; Watch has to fit in the remaining density and keep that margin, and gets its own place-and-route run before anything else lands.
 
+Signoff gate, 8 Oct 2026. The GDS workflow now has a signoff job (verify/signoff.py) that reads the post-route metrics. It fails on negative setup or hold slack at any corner, or on DRC, antenna or LVS errors. It warns when slow-corner setup slack is under +4.0 ns or the worst hold slack is under the flow's GRT_RESIZER_HOLD_SLACK_MARGIN. Its first runs were on commits d31dad0, 98096c4 and 3d26e12, which add only CI, the formal properties (inside `ifdef FORMAL`, which the flow never defines) and docs. They reproduce the fcafc0b numbers exactly and pass:
+- setup slack +4.24 ns slow, +9.63 typical and +11.79 fast;
+- worst hold slack +0.0495 ns;
+- 619,342 um2 of cells, 68.6% utilisation, 113,131 um2 of timing-repair buffers;
+- 0 DRC and 0 antenna violations.
+They warn on the hold margin and on 10 max-slew, 1 max-cap and 308 max-fanout violations, the electrical items left for signoff.
+
 If the 8x4 grant arrives: add a third EM (2,400 cells) or double program memory to 64 words per EM (1,600 cells), not both, and keep utilisation under 65%.
 
 ## Verification methodology
