@@ -17,7 +17,12 @@ case-insensitive; labels and aliases are case-sensitive.
     JMP   target  |  JMP always|TO|LATE|TXE|!OSRE|X--|Y--, target  |  JMP HIGH|LOW pin, target
     SYNC  set|wait, n
 
-Directives: `.pin name B0` (pin alias), `.equ name value`, `.word value` (raw word).
+Directives: `.pin name B0` (pin alias), `.equ name value`, `.word value` (raw word),
+`.define name text` (the operand token `name` is replaced by `text`), and conditional
+assembly with `.if name` / `.if !name` / `.else` / `.endif` on an `.equ` value (nonzero is
+true; blocks nest). A caller can override any `.equ` with defines (`assemble(text,
+defines={"CPOL": 1})`, `python -m asm prog.s -D CPOL=1`), which is how one source gives
+several variants of a program, such as the four SPI modes.
 Pins are B0-B7, M0-M3 or 0-11. Numbers are decimal, 0x hex or 0b binary.
 """
 
@@ -53,10 +58,12 @@ _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class Assembler:
-    def __init__(self) -> None:
+    def __init__(self, defines: Optional[Dict[str, int]] = None) -> None:
         self.pins: Dict[str, int] = {}
         self.equs: Dict[str, int] = {}
         self.labels: Dict[str, int] = {}
+        self.defines: Dict[str, int] = dict(defines or {})   # overrides for .equ
+        self.aliases: Dict[str, str] = {}                     # .define name -> text
 
     # -- operands -------------------------------------------------------------------
 
@@ -231,6 +238,13 @@ class Assembler:
 
         raise _LineError(f"unknown mnemonic {mnem!r}")
 
+    def condition(self, expr: str) -> bool:
+        """`.if` operand: an .equ name or a number, optionally negated with `!`."""
+        e = expr.strip()
+        neg = e.startswith("!")
+        v = self.number(e[1:] if neg else e, ".if operand", 0, 0xFFFF) != 0
+        return v != neg
+
     # -- whole program --------------------------------------------------------------
 
     def assemble(self, text: str, source: str = "<input>") -> List[int]:
@@ -238,9 +252,36 @@ class Assembler:
         errors: List[Tuple[int, str]] = []
         items: List[Tuple[int, str, str]] = []     # (line number, mnemonic, operands)
         pc = 0
+        conds: List[Tuple[bool, bool]] = []        # (this block is on, an enclosing one is)
+        used: set = set()
         for ln, raw in enumerate(lines, 1):
             line = re.split(r"[;#]", raw, maxsplit=1)[0].strip()
             try:
+                d = line.split(None, 1)
+                kw = d[0].lower() if d else ""
+                if kw == ".if":
+                    on = all(c[0] for c in conds)
+                    conds.append((self.condition(d[1] if len(d) > 1 else "") if on else False, on))
+                    continue
+                if kw == ".else":
+                    if not conds:
+                        raise _LineError(".else without .if")
+                    cur, outer = conds[-1]
+                    conds[-1] = (outer and not cur, outer)
+                    continue
+                if kw == ".endif":
+                    if not conds:
+                        raise _LineError(".endif without .if")
+                    conds.pop()
+                    continue
+                if not all(c[0] for c in conds):
+                    continue
+                if kw == ".define":
+                    a = d[1].split() if len(d) > 1 else []
+                    if len(a) != 2 or not _IDENT.match(a[0]):
+                        raise _LineError(".define takes a name and one token, e.g. '.define LEAD rise'")
+                    self.aliases[a[0]] = a[1]
+                    continue
                 while True:
                     ml = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$", line)
                     if not ml:
@@ -267,12 +308,22 @@ class Assembler:
                     a = rest.split()
                     if len(a) != 2 or not _IDENT.match(a[0]):
                         raise _LineError(".equ takes a name and a value")
-                    self.equs[a[0]] = self.number(a[1], ".equ value", 0, 0xFFFF)
+                    if a[0] in self.defines:
+                        used.add(a[0])
+                        self.equs[a[0]] = self.number(str(self.defines[a[0]]), f"define {a[0]}", 0, 0xFFFF)
+                    else:
+                        self.equs[a[0]] = self.number(a[1], ".equ value", 0, 0xFFFF)
                     continue
+                for name, text_ in self.aliases.items():
+                    rest = re.sub(rf"\b{name}\b", text_, rest)
                 items.append((ln, mnem, rest))
                 pc += 1
             except _LineError as e:
                 errors.append((ln, str(e)))
+        if conds:
+            errors.append((len(lines), ".if without .endif"))
+        for name in sorted(set(self.defines) - used):
+            errors.append((0, f"define {name}: the program has no '.equ {name}' to override"))
         if pc > ISA.program_words:
             errors.append((items[ISA.program_words][0],
                            f"program is {pc} words; an Event Machine holds {ISA.program_words}"))
@@ -290,8 +341,9 @@ class Assembler:
         return words
 
 
-def assemble(text: str, source: str = "<input>") -> List[int]:
-    return Assembler().assemble(text, source)
+def assemble(text: str, source: str = "<input>",
+             defines: Optional[Dict[str, int]] = None) -> List[int]:
+    return Assembler(defines).assemble(text, source)
 
 
 # -- disassembler ------------------------------------------------------------------
