@@ -7,7 +7,7 @@ The submission's verification report is built from this log: every defect found,
 | Method | Spec / ISA | ISS | Firmware | RTL | Flow | Total |
 | --- | --- | --- | --- | --- | --- | --- |
 | ISA review against the spec (docs/isa-decisions.md) | 18 | | | | | 18 |
-| Firmware run on the ISS against peer models | 1 | | 3 | | | 4 |
+| Firmware run on the ISS against peer models | 1 | | 4 | | | 5 |
 | ISS self-checks (event-skipping vs every-cycle mode, logging) | | 3 | | | | 3 |
 | Prover (Z3) | | | 0 | | | 0 |
 | RTL vs ISS differential (cocotb) | | | | 0 | | 0 |
@@ -53,6 +53,7 @@ Firmware (all found by running on the ISS against a peer model)
 - SPI master: two OUTs scheduled at the same T set LATE; fixed with `ADDT 3, now`.
 - I2C master: level WAITs on SCL matched a stale level after clock stretching; fixed with edge waits. The prover now rejects the level-wait variant as well.
 - SPI slave: `OUT miso @T+1` was late; fixed with `@T+2`, with the measured limits in the spec.
+- SPI slave: `WAIT cs, rise` missed a deselect that came before the program reached it, and the slave then lost the next byte. Found when the CPHA = 1 build ran against the master model with 3-cycle SCK phases; fixed with a level wait (`WAIT cs, high`) in every mode (10 Oct).
 
 ISS
 - Host TX bytes were ordered by value instead of arrival cycle.
@@ -128,6 +129,22 @@ Restructured Ear pause (radix-4 dividers, fetch stage, argmax stage):
 | Argmax stage prefers the later class on a tie | window-by-window ("delayed") |
 | The "pin always high" special case removed | not caught: equivalent (digits 3, 3, 3 already give 63), so the special case was deleted |
 
-The divider and rank mutants passed every class-level test at first. The "delayed" windows, with pin 3's high time tuned to each divider corner, were written to catch them, and on their first run they found the real divisor bug above. Firmware mutations against the prover (level wait, SDA changing with the SCL fall, inverted ACK, broken UART variants) are in prove/tests.
+The divider and rank mutants passed every class-level test at first. The "delayed" windows, with pin 3's high time tuned to each divider corner, were written to catch them, and on their first run they found the real divisor bug above. Firmware mutations against the prover (level wait, SDA changing with the SCL fall, inverted ACK, an I2C high phase of P/4 in the fast build, the fast shape against the standard contract, broken UART and SPI variants) are in prove/tests.
 
 Formal properties of the Event Machine (verify/mutate.py, 8 Oct): 31 planted bugs in src/shruti_em.v, each run through the bounded check (em.sby, task bmc). All 31 give a counterexample, and each of the 27 properties is the first to fail for at least one of them. The table, with the failing property and the time for each, is in verify/README.md.
+
+I2C target (fw/i2c_target.s, 10 Oct), each bug planted alone against the scenario suite in fw/tests (`target_scenarios`): fast and standard mode, a master with no data hold time, the limits (SCL low 11, high 4), repeated STARTs, a host that answers late (stretching), and joining in the middle of another transaction.
+
+| Planted bug | Caught by |
+| --- | --- |
+| No SCL recheck after SDA rises during the first clock of a byte | no data hold time (false STOP) |
+| No SCL recheck after SDA falls during the first clock of a byte | no data hold time (false repeated START) |
+| STOP not flagged | fast mode (SYNC flag 3) |
+| Bits taken LSB first | every scenario but the late host |
+| Nine bits per byte | every scenario |
+| SCL released with the ACK (no setup time) | every scenario (LATE) |
+| SDA held 40 cycles into the next bit | the limits (SCL low 11) |
+| SCL never held while the host decides | the late host |
+| Any SDA fall taken as a START | joining mid-transaction |
+
+The two recheck bugs pass at the usual 8-cycle data hold; only the master with no hold time catches them, which is why that scenario exists.

@@ -1,19 +1,24 @@
 """Firmware on the ISS against Python models of the peer devices."""
 
 import random
+from pathlib import Path
 
 import pytest
 
 import fw
-from fw.peers import I2cSlave, SpiSlave, i2c_timing, uart_decode, uart_stimulus
+from asm import assemble
+from fw.peers import (I2cMaster, I2cSlave, OpenDrainBus, SpiSlave, i2c_conditions, i2c_timing,
+                      uart_decode, uart_stimulus)
 from iss import Sim, simulate
 
 UART_B = [16, 50, 434, 5208]            # 3.125 Mbaud, 1 Mbaud, 115200, 9600 at 50 MHz
 
 
 def test_word_counts_fit_the_program_memory():
-    sizes = {n: len(fw.load(n)) for n in ("uart_tx", "uart_rx", "spi_master", "i2c_master")}
-    assert sizes == {"uart_tx": 12, "uart_rx": 17, "spi_master": 19, "i2c_master": 32}
+    names = ("uart_tx", "uart_rx", "spi_master", "spi_slave", "i2c_master", "i2c_target")
+    sizes = {n: len(fw.load(n)) for n in names}
+    assert sizes == {"uart_tx": 12, "uart_rx": 17, "spi_master": 19, "spi_slave": 18,
+                     "i2c_master": 32, "i2c_target": 32}
     assert len(fw.load("spi_slave")) == 18
 
 
@@ -235,6 +240,160 @@ def test_i2c_two_transactions_keep_bus_free_time():
     assert slave.transactions == [[0xA0, 0x10], [0xA0, 0x20]]
     t = i2c_timing(res.trace, SCL, SDA)
     assert t["bus_free"] >= P
+
+
+# -- I2C target ---------------------------------------------------------------------------
+
+T_SCL, T_SDA = 4, 5
+ACK, NACK = 0x00, 0xFF
+TARGET_SRC = (Path(fw.__file__).parent / "i2c_target.s").read_text()
+# Bytes whose bit 7 differs from bit 6, so SDA changes right after the first clock of a byte
+# in both directions: the case the STOP and repeated-START watch must not mistake.
+TARGET_DATA = [[0xA0, 0x40, 0xBF, 0x7F, 0x80], [0xA2, 0x01, 0xFE]]
+
+
+def run_target(transactions, low, high, answers=None, hold=8, repeated=False, words=None):
+    m = I2cMaster(T_SCL, T_SDA, transactions, low, high, hold=hold, repeated=repeated)
+    n = sum(len(t) for t in transactions)
+    answers = [(0, ACK)] * n if answers is None else answers
+    sim = Sim([words or fw.load("i2c_target")], devices=[m], host_tx=[answers])
+    return m, sim.run(200_000)
+
+
+def target_ok(m, res, transactions, conditions):
+    flat = [b for t in transactions for b in t]
+    return (m.done is not None and m.acks == [[0] * len(t) for t in transactions]
+            and res.host_rx[0] == flat and i2c_conditions(res.trace, T_SCL, T_SDA) == conditions
+            and not res.ems[0].LATE and not res.ems[0].OVF)
+
+
+@pytest.mark.parametrize("low,high", [(65, 30), (235, 200)])    # fast, standard mode minimums
+def test_i2c_target_receives_writes(low, high):
+    m, res = run_target(TARGET_DATA, low, high)
+    assert target_ok(m, res, TARGET_DATA, ["START", "STOP", "START", "STOP"])
+    assert res.sync[2] == 1 and res.sync[3] == 1           # START and STOP seen
+    t = i2c_timing(res.trace, T_SCL, T_SDA)
+    assert t["low"] >= low and t["high"] >= high             # the target shortens nothing
+
+
+def test_i2c_target_host_nacks_an_address_and_a_data_byte():
+    data = [[0xA4, 0x11], [0xA0, 0x22, 0x33, 0x44]]
+    m, res = run_target(data, 65, 30, [(0, NACK), (0, ACK), (0, ACK), (0, NACK)])
+    assert m.acks == [[1], [0, 0, 1]]                       # the master stops at each NACK
+    assert res.host_rx[0] == [0xA4, 0xA0, 0x22, 0x33]
+    assert i2c_conditions(res.trace, T_SCL, T_SDA) == ["START", "STOP", "START", "STOP"]
+
+
+def test_i2c_target_repeated_start():
+    data = [[0xA0, 0x10], [0xA0, 0x20], [0xA2, 0x30]]
+    m, res = run_target(data, 65, 30, repeated=True)
+    assert target_ok(m, res, data, ["START", "START", "START", "STOP"])
+
+
+def test_i2c_target_stretches_scl_until_the_host_answers():
+    m, res = run_target([[0xA0, 0x5A]], 65, 30, [(5000, ACK), (12000, ACK)])
+    assert m.acks == [[0, 0]] and res.host_rx[0] == [0xA0, 0x5A]
+    rises = [c for c, v in res.pin_trace(T_SCL) if v == 1]
+    # SCL rises once per answer, 16 cycles after the ACK is on SDA, and not before.
+    assert [c for c in rises if 5000 <= c < 5040] and not [c for c in rises if 1500 < c < 5000]
+    assert [c for c in rises if 12000 <= c < 12040]
+    assert i2c_timing(res.trace, T_SCL, T_SDA)["data_setup"] >= 16
+
+
+@pytest.mark.parametrize("hold", [0, 1, 2, 8, 30])
+def test_i2c_target_with_any_data_hold_time(hold):
+    m, res = run_target(TARGET_DATA, 65, 30, hold=hold)
+    assert target_ok(m, res, TARGET_DATA, ["START", "STOP", "START", "STOP"])
+
+
+def test_i2c_target_limits():
+    """Measured: SCL high of 4 cycles and low of 11 work, with no data hold time; high of 3
+    loses bits, and with low of 10 the target releases SDA after SCL has risen again, a
+    false STOP on the bus."""
+    stops = ["START", "STOP", "START", "STOP"]
+    assert target_ok(*run_target(TARGET_DATA, 11, 4, hold=0), TARGET_DATA, stops)
+    assert not target_ok(*run_target(TARGET_DATA, 65, 3), TARGET_DATA, stops)
+    m, res = run_target(TARGET_DATA, 10, 30)
+    assert i2c_conditions(res.trace, T_SCL, T_SDA) != stops
+
+
+@pytest.mark.parametrize("fast,P,period", [(0, 249, 500), (1, 82, 125)])  # 100 and 400 kHz
+def test_i2c_master_and_target_on_two_ems(fast, P, period):
+    """EM0 runs i2c_master, EM1 runs i2c_target; the board joins their pins as two open-drain
+    lines. EM1's host ACKs the address and the first data byte and NACKs the second."""
+    data = [0xA0, 0x12, 0xA5]
+    bus = OpenDrainBus([[SCL, T_SCL], [SDA, T_SDA]])
+    sim = Sim([fw.load("i2c_master", FAST=fast), fw.load("i2c_target")], P=[P, 0],
+              cfg=[I2C_CFG, {}], devices=[bus],
+              host_tx=[[(0, b) for b in data], [(0, ACK), (0, ACK), (0, NACK)]])
+    res = sim.run(40 * period)
+    assert res.host_rx[1] == data
+    assert res.sync[1] == 1                                 # the master saw the NACK
+    assert res.sync[2] == 1 and res.sync[3] == 1            # the target saw START and STOP
+    assert not res.ems[0].LATE and not res.ems[1].LATE
+    assert i2c_conditions(res.trace, SCL, SDA) == ["START", "STOP"]
+    assert i2c_timing(res.trace, SCL, SDA)["period"] == period
+
+
+# Planted bugs: each must fail at least one of the scenarios above.
+TARGET_BUGS = {
+    # The recheck of SCL after an SDA change, replaced by an instruction with no effect here.
+    "no_recheck_after_sda_rise": ("        JMP   LOW sda, b7lo\n        JMP   LOW scl, rest      ;",
+                                  "        JMP   LOW sda, b7lo\n        SYNC  set, 3             ;"),
+    "no_recheck_after_sda_fall": ("        JMP   HIGH sda, b7hi\n        JMP   LOW scl, rest\n",
+                                  "        JMP   HIGH sda, b7hi\n        SYNC  set, 2\n"),
+    "no_stop_flag": ("        SYNC  set, 3", "        SYNC  set, 0"),
+    "lsb_first": ("SHIFT in, msb, 8", "SHIFT in, lsb, 8"),
+    "nine_bits": ("SET   X, 6", "SET   X, 7"),
+    "no_ack_setup_time": ("OUT   scl, 1 @T+16", "OUT   scl, 1 @T+0 "),
+    "sda_held_into_next_bit": ("OUT   sda, 1 @T+8", "OUT   sda, 1 @T+40"),
+    "no_stretch": ("OUT   scl, 0 @T+2", "OUT   scl, 1 @T+2"),
+    "start_on_any_sda_fall": ("JMP   LOW scl, idle", "JMP   LOW scl, start"),
+}
+
+
+def target_scenarios(words):
+    stops = ["START", "STOP", "START", "STOP"]
+    failed = []
+    for name, args, kw, cond in [
+        ("fast", (TARGET_DATA, 65, 30), {}, stops),
+        ("standard", (TARGET_DATA, 235, 200), {}, stops),
+        ("hold 0", (TARGET_DATA, 65, 30), {"hold": 0}, stops),
+        ("limits", (TARGET_DATA, 11, 4), {"hold": 0}, stops),
+        ("repeated", ([[0xA0, 0x10], [0xA0, 0x20]], 65, 30), {"repeated": True},
+         ["START", "START", "STOP"]),
+    ]:
+        m, res = run_target(*args, words=words, **kw)
+        if not target_ok(m, res, args[0], cond) or (name == "fast" and not res.sync[3]):
+            failed.append(name)
+    m, res = run_target([[0xA0, 0x5A]], 65, 30, [(5000, ACK), (12000, ACK)], words=words)
+    t = i2c_timing(res.trace, T_SCL, T_SDA)
+    if m.acks != [[0, 0]] or (t["data_setup"] or 0) < 16 or 1500 < min(
+            [c for c, v in res.pin_trace(T_SCL) if v == 1 and c > 1500] or [0]) < 5000:
+        failed.append("stretch")
+    # Joining mid-transaction: ten data clocks, SDA changing while SCL is low, before the
+    # first START. Only the START may begin a byte.
+    noise = []
+    for k in range(10):
+        t = 20 + 60 * k
+        noise += [(t, T_SCL, 0), (t + 10, T_SDA, k & 1), (t + 30, T_SCL, 1)]
+    m = I2cMaster(T_SCL, T_SDA, [[0xA0, 0x01]], 65, 30, start=1000)
+    res = Sim([words], devices=[m], stimulus=noise, host_tx=[[(0, ACK)] * 4]).run(50_000)
+    if res.host_rx[0] != [0xA0, 0x01]:
+        failed.append("joining")
+    return failed
+
+
+def test_i2c_target_scenarios_pass_on_the_program():
+    assert target_scenarios(fw.load("i2c_target")) == []
+
+
+@pytest.mark.parametrize("bug", sorted(TARGET_BUGS))
+def test_i2c_target_scenarios_catch_planted_bugs(bug):
+    old, new = TARGET_BUGS[bug]
+    assert TARGET_SRC.count(old) == 1, bug
+    failed = target_scenarios(assemble(TARGET_SRC.replace(old, new), bug))
+    assert failed, f"{bug} is not caught"
 
 
 # -- SPI slave ----------------------------------------------------------------------------
