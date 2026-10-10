@@ -1,10 +1,10 @@
 ## How it works
 
-Shruti is a protocol emulator that also listens. One hardware stream of filtered, timestamped pin edges feeds three consumers: two Event Machines that speak UART, SPI and I2C from firmware (every timing-critical instruction is anchored to the timestamp of the last matched edge, not to when the instruction ran); Watch, a set of rule monitors with a 32-event flight recorder; and the Ear, an on-die ternary classifier that identifies an unknown bus from its edge timing, flags traffic it does not recognise, and can be retrained after fabrication over the host SPI.
+Shruti is a protocol emulator that also listens. One hardware stream of filtered, timestamped pin edges feeds three consumers: two Event Machines that speak UART, SPI and I2C from firmware (every timing-critical instruction is anchored to the timestamp of the last matched edge, not to when the instruction ran); Watch, rule monitors with a flight recorder (planned, not in this revision); and the Ear, an on-die ternary classifier that names a bus it was trained on from its edge timing, raises a confident flag when it is sure, and can be retrained after fabrication over the host SPI.
 
-Every protocol program ships with a machine-checked proof that it meets its timing contract. The full design is described in `docs/architecture-spec.md`.
+The UART transmit and receive, SPI master and I2C master programs come with machine-checked proofs that they meet their timing contracts. The full design is described in `docs/architecture-spec.md`.
 
-This revision of the RTL (milestone 1) has both Event Machines, the 24-bit timestamp counter, the input path (two-flop synchroniser and a glitch filter with a selectable depth: bypass, 2-of-3 or 3-of-5 majority) on all 12 watchable pins, the pin drivers with per-pin open-drain mode, the host SPI, and the Ear, whose class and flags drive `uo[7:3]`. Watch comes next; trigger out reads 0.
+This revision of the RTL (milestone 1) has both Event Machines, the 24-bit timestamp counter, the input path (two-flop synchroniser and a glitch filter with a selectable depth: bypass, 2-of-3 or 3-of-5 majority) on all 12 watchable pins, the pin drivers with per-pin open-drain mode, the host SPI, and the Ear, whose class and flags drive `uo[7:3]`. Read the class only when the confident flag (`uo[3]`) is set: on simulated buses it is right 99.5% of the time then, while the class pins alone are right about 87% of the time, and the out-of-distribution flag does not reliably catch traffic the Ear was not trained on. UARTs at 19,200 baud and slower close almost every window with too few edges to classify, and fast UARTs are mostly classified as CAN. Watch comes next; trigger out reads 0.
 
 ## How to test
 

@@ -18,6 +18,29 @@ jobs:
         with:
           pdk: ihp-sg13cmos5l
 
+  # The gds job passes even when timing fails; this reads the post-route metrics and fails
+  # on negative slack, DRC, antenna or LVS errors (verify/signoff.py).
+  signoff:
+    needs: gds
+    runs-on: ubuntu-24.04
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v6
+
+      - name: download GDS logs
+        uses: actions/download-artifact@v7
+        with:
+          name: GDS_logs
+          path: gds_logs
+
+      - name: Setup python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Check signoff metrics
+        run: python verify/signoff.py gds_logs/runs/wokwi/final/metrics.json --config src/config.json
+
   precheck:
     needs: gds
     runs-on: ubuntu-24.04
