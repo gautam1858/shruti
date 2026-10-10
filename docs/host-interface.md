@@ -86,7 +86,7 @@ RUN = 0 holds an EM in the ISA's reset state:
 
 P, the CFG fields and both FIFOs keep their contents, so the host sets them up while the EM is stopped. Setting RUN starts the EM at PC 0. Clearing it returns the EM to the reset state, which also clears its sticky flags.
 
-Chip reset leaves program memory undefined, so load all 32 words before starting an EM. Pins an EM has driven stay driven after it stops; write RELEASE to let them go.
+Chip reset leaves program memory undefined, so load all 32 words before starting an EM. Flip-flops do not power up to 0. On the demo board a deselected design is powered down and loses its state, so after selecting it again the host resets it and reloads the programs, P, CFG and the Ear's weights, thresholds and configuration. Pins an EM has driven stay driven after it stops; write RELEASE to let them go.
 
 ## Timing
 

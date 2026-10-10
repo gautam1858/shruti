@@ -45,7 +45,7 @@ The Event Machines cannot issue an instruction per half-bit at 10 Mbit/s, so Eth
 ## Silicon realities
 
 - I/O: all 24 Tiny Tapeout signals. 8 bidirectional bus pins (`uio`) with per-pin open-drain mode for I2C and 1-Wire (CAN goes through an external transceiver), 4 input-only monitor pins, a 3-wire host SPI, trigger-in, and outputs for MISO, IRQ, trigger-out, the class LEDs and the two flags. The demo board's RP2040 is the host.
-- Memory first: all state in flip-flops. Measured at commit fcafc0b: 4,396 flip-flops and 27,789 cells synthesised for the Event Machines, program memory, input path, host SPI and the Ear; 619,342 um2 of cells, 68.6% of the 6x4 core after placement, with 50 MHz met at all corners. Watch has to fit in the rest. The CMOS5L SRAM macros cannot be powered within this shuttle's rules (spec section 8).
+- Memory first: all state in flip-flops. Measured at commit fcafc0b: 4,396 flip-flops and 27,789 cells synthesised for the Event Machines, program memory, input path, host SPI and the Ear; 619,342 um2 of cells, 68.6% of the 6x4 core after placement, with 50 MHz met at all corners. Watch has to fit in the rest. IHP SRAM macros are allowed and can be powered on Metal4 (spec section 8); putting the Ear's weights and Watch's recorder in macros is planned and will be measured on a GDS run.
 - Glitch filter: per pin, fully synchronous, configurable (bypass, 2-of-3 or 3-of-5 majority). 3-of-5 rejects pulses under 60 ns at 50 MHz and suits buses up to a few MHz; faster clocks use 2-of-3 or bypass. No analog delay lines: nothing to calibrate, and it can be formally checked.
 
 ## Verification
@@ -87,6 +87,7 @@ Dates from the spec's milestones:
 - A prescaler for the Ear's timebase so slow buses get answers, and better training for fast UARTs: before the feature freeze, 20 Dec 2026.
 - `shruti teach` and `shruti load` (which refuses unproven programs), a proof for the SPI slave, and the "LLM writes PS/2 firmware, the prover accepts it" demo: 20 Dec 2026; demos count only if passing by then.
 - The measured LLM red team (mutations and candidate properties proposed from the ISA, bug yield reported per method): in the verification report, 12 Jan 2027.
+- The organisers' standard settings: SPI modes 0-3 for the SPI master and slave (both are mode 0 today), I2C at 100 and 400 kHz (the master's equal half-periods cap fast mode at about 385 kHz today) and an I2C target: before the feature freeze, 20 Dec 2026.
 - Low-speed USB and the Ethernet stretch: only if passing by 20 Dec 2026.
 
 ### Known limitations
