@@ -22,7 +22,7 @@ The RP2040's PIO is cycle-exact, but its timing is relative to its own instructi
 2. `IN pin @ T+d`: hardware samples the pin at a computed future time, so a mid-bit read is one instruction.
 3. Edge-latched snapshot: all 12 watchable pins are latched as they stood at the matched edge, so a slave reads data at the clock edge, not several cycles later.
 
-Two Event Machines, 16-bit instructions, 32 words each. Measured on the simulator: UART transmit is 12 words, UART receive 17, SPI master 19, SPI slave 18 and I2C master 32.
+Two Event Machines, 16-bit instructions, 32 words each. Measured on the simulator: UART transmit is 12 words, UART receive 17, SPI master 19, SPI slave 18 (15 with CPHA = 1) and I2C master 32.
 
 ## The Ear: identify, abstain, learn
 
@@ -63,7 +63,7 @@ Planned: protocol-level cocotb bus models with mutation tests, formal properties
 
 Spec v1.0: 23 Sep 2026, with the ISA reconciled to v1.1 (`docs/isa-decisions.md`). RTL in Verilog.
 
-### Built and tested (as of commit 1eeba54, 8 Oct 2026)
+### Built and tested (as of commit 0b160d7, 10 Oct 2026)
 
 Every line names its evidence; the GitHub Actions in `.github/workflows` run all of it on every push.
 - **Event Machines** (two), the 24-bit timestamp counter, the 12-pin input path with its glitch filter, the pin drivers and the host SPI (`src/`, `docs/host-interface.md`). They match the ISS in every register, FIFO and pin, every cycle, over 60 random two-EM programs with random pins and host traffic (`test/test.py`: `event_machines_match_the_iss`), plus directed FIFO corner tests (`tx_fifo_write_in_the_cycle_of_a_pull`, `rx_fifo_two_byte_push_wraps`, `rx_fifo_read_in_the_cycle_after_a_push`) and the input path against its reference (`input_path_matches_reference_model`, `glitch_filter_modes`).
@@ -73,9 +73,9 @@ Every line names its evidence; the GitHub Actions in `.github/workflows` run all
 - **Gate level:** the cocotb tests on the routed netlist, 11 passing and 2 RTL-only skipped (`gl_test` job).
 - **Physical:** 50 MHz met at all three corners, slow-corner setup slack +4.24 ns, 68.6% utilisation, 0 DRC and 0 antenna violations, precheck passing (commit fcafc0b, spec section 8). The `signoff` job fails the build on negative slack, DRC, antenna or LVS errors (`verify/signoff.py`).
 - **ISS** (`iss/`), generated from `isa/isa.yaml`: every instruction and scheduler rule (`iss/tests`).
-- **Assembler and disassembler** (`asm/`): round trip over all 65,536 words.
-- **Firmware** (`fw/`): UART transmit and receive, SPI master and slave, I2C master, each tested on the ISS against a model of the peer device, with injected faults (`fw/tests`).
-- **Proofs** (`prove/`, `python -m shruti prove`): UART transmit (any number of frames), UART receive, SPI master and I2C master against their contracts, with counterexamples replayed on the ISS.
+- **Assembler and disassembler** (`asm/`): round trip over all 65,536 words; conditional assembly and `-D` overrides, so one source builds every SPI mode.
+- **Firmware** (`fw/`): UART transmit and receive, SPI master and slave in each of modes 0-3, I2C master, each tested on the ISS against a model of the peer device, with injected faults (`fw/tests`).
+- **Proofs** (`prove/`, `python -m shruti prove`): UART transmit (any number of frames), UART receive, SPI master (each of modes 0-3) and I2C master against their contracts, with counterexamples replayed on the ISS.
 - **Ear training and evaluation** (`ear/`): the bit-exact reference, the protocol simulator, a trained model (86.6% test accuracy on simulated buses, 99.5% when confident) and its evaluation in `ear/REPORT.md` (coverage by speed, foreign signals, held-out classes, float against integer; `ear/evaluate.py`).
 
 ### Planned
@@ -87,7 +87,7 @@ Dates from the spec's milestones:
 - A prescaler for the Ear's timebase so slow buses get answers, and better training for fast UARTs: before the feature freeze, 20 Dec 2026.
 - `shruti teach` and `shruti load` (which refuses unproven programs), a proof for the SPI slave, and the "LLM writes PS/2 firmware, the prover accepts it" demo: 20 Dec 2026; demos count only if passing by then.
 - The measured LLM red team (mutations and candidate properties proposed from the ISA, bug yield reported per method): in the verification report, 12 Jan 2027.
-- The organisers' standard settings: SPI modes 0-3 for the SPI master and slave (both are mode 0 today), I2C at 100 and 400 kHz (the master's equal half-periods cap fast mode at about 385 kHz today) and an I2C target: before the feature freeze, 20 Dec 2026.
+- The organisers' standard settings still open: I2C at 100 and 400 kHz (the master's equal half-periods cap fast mode at about 385 kHz today) and an I2C target: before the feature freeze, 20 Dec 2026.
 - Low-speed USB and the Ethernet stretch: only if passing by 20 Dec 2026.
 
 ### Known limitations
