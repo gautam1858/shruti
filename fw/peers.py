@@ -70,7 +70,11 @@ def uart_decode(trace: Sequence[Tuple[int, int]], initial: int, period: int,
 
 @dataclass
 class SpiSlave(Device):
-    """Mode-0 SPI slave: samples MOSI on SCK rising, changes MISO after SCK falling."""
+    """SPI slave in any mode (CPOL = mode >> 1, CPHA = mode & 1), MSB first. SCK idles at
+    CPOL; the leading edge leaves the idle level. With CPHA = 0 it drives bit 7 when CS falls,
+    samples MOSI on leading edges and shifts MISO after trailing edges; with CPHA = 1 it
+    shifts MISO after leading edges and samples on trailing edges. MISO changes one cycle
+    after the edge the slave sees."""
 
     sck: int
     mosi: int
@@ -79,7 +83,8 @@ class SpiSlave(Device):
     responses: List[int] = field(default_factory=list)
     received: List[int] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
-    rise_times: List[int] = field(default_factory=list)
+    sample_times: List[int] = field(default_factory=list)   # cycles of the sampling edges
+    mode: int = 0
 
     def attach(self, sim) -> None:
         super().attach(sim)
@@ -89,23 +94,28 @@ class SpiSlave(Device):
 
     def on_cycle(self, c: int) -> None:
         pad = self.sim.pad
+        cpol, cpha = self.mode >> 1, self.mode & 1
         sck, mosi, cs = pad[self.sck], pad[self.mosi], pad[self.cs]
         if mosi != self.prev[self.mosi]:
             self.mosi_changed = c
+        leading = self.prev[self.sck] == cpol and sck != cpol
+        trailing = self.prev[self.sck] != cpol and sck == cpol
+        sample, shift = (leading, trailing) if cpha == 0 else (trailing, leading)
         if self.prev[self.cs] == 1 and cs == 0:
             self.selected, self.bit, self.inb = True, 0, 0
             self.outb = self.responses.pop(0) if self.responses else 0xFF
-            self.sim.set_external(self.miso, (self.outb >> 7) & 1, c + 1)
-            if sck != 0:
-                self.errors.append(f"{c}: CS fell with SCK high")
-        elif self.selected and self.prev[self.sck] == 0 and sck == 1:
+            if cpha == 0:
+                self.sim.set_external(self.miso, (self.outb >> 7) & 1, c + 1)
+            if sck != cpol:
+                self.errors.append(f"{c}: CS fell with SCK not at its idle level")
+        elif self.selected and sample:
             if self.mosi_changed == c:
                 self.errors.append(f"{c}: MOSI changed on the sampling edge")
             self.inb = (self.inb << 1) | mosi
             self.bit += 1
-            self.rise_times.append(c)
-        elif self.selected and self.prev[self.sck] == 1 and sck == 0:
-            if self.bit < 8:
+            self.sample_times.append(c)
+        elif self.selected and shift:
+            if self.bit < 8:                  # present the next bit
                 self.sim.set_external(self.miso, (self.outb >> (7 - self.bit)) & 1, c + 1)
         if self.prev[self.cs] == 0 and cs == 1 and self.selected:
             self.selected = False

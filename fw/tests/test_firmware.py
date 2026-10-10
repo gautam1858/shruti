@@ -116,28 +116,37 @@ def test_uart_loopback_tx_to_rx_on_two_ems():
 SCK, MOSI, MISO, CS = 2, 3, 9, 5
 
 
+def spi_master(mode):
+    return fw.load("spi_master", CPOL=mode >> 1, CPHA=mode & 1)
+
+
+@pytest.mark.parametrize("mode", [0, 1, 2, 3])
 @pytest.mark.parametrize("P", [5, 10, 25, 1000])
-def test_spi_master_full_duplex(P):
-    rng = random.Random(P)
+def test_spi_master_full_duplex(mode, P):
+    rng = random.Random(16 * P + mode)
     out = [rng.randrange(256) for _ in range(6)]
     back = [rng.randrange(256) for _ in range(6)]
-    slave = SpiSlave(SCK, MOSI, MISO, CS, responses=list(back))
-    res = Sim([fw.load("spi_master")], P=[P], devices=[slave],
+    slave = SpiSlave(SCK, MOSI, MISO, CS, responses=list(back), mode=mode)
+    res = Sim([spi_master(mode)], P=[P], devices=[slave],
               host_tx=[[(0, b) for b in out]]).run(200 * P + 1000)
     assert slave.received == out
     assert res.host_rx[0] == back
     assert slave.errors == [] and not res.ems[0].LATE
-    # SCK period is exactly 2P within a byte
-    r = slave.rise_times
+    # SCK period is exactly 2P within a byte, and SCK idles at CPOL
+    r = slave.sample_times
     assert all(b - a == 2 * P for a, b in zip(r, r[1:]) if b - a < 4 * P)
+    assert res.pin_trace(SCK)[-1][1] == mode >> 1
 
 
-def test_spi_master_minimum_half_period():
-    """Measured: P = 5 (SCK = 5 MHz at 50 MHz) is the fastest on-time clock; P = 4 is late."""
-    slave = SpiSlave(SCK, MOSI, MISO, CS)
-    res = Sim([fw.load("spi_master")], P=[4], devices=[slave],
-              host_tx=[[(0, 0x5A)]]).run(1000)
-    assert res.ems[0].LATE
+@pytest.mark.parametrize("mode", [0, 1, 2, 3])
+def test_spi_master_minimum_half_period(mode):
+    """Measured: P = 5 (SCK = 5 MHz at 50 MHz) is the fastest on-time clock in every mode;
+    P = 4 is late."""
+    for P, late in ((4, True), (5, False)):
+        slave = SpiSlave(SCK, MOSI, MISO, CS, mode=mode)
+        res = Sim([spi_master(mode)], P=[P], devices=[slave],
+                  host_tx=[[(0, 0x5A), (0, 0xC3)]]).run(1000)
+        assert res.ems[0].LATE == late, (mode, P)
 
 
 def test_spi_master_cs_high_time_between_bytes():

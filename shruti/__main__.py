@@ -49,8 +49,19 @@ def main(argv=None) -> int:
                 print(f"{a.program} against {cpath}:")
                 print(out.report())
                 return 0 if out.proved else 1
-            out = prove_k(load_k(cpath), assemble(Path(a.program).read_text(), a.program))
             print(f"{a.program} against {cpath}:")
+            text = Path(a.program).read_text()
+            if kind == "spi_master":
+                from prove.spi import mode_defines
+                c = load_k(cpath)
+                ok = True
+                for m in c.modes:
+                    d = mode_defines(m) if c.modes != [0] else {}
+                    out = prove_k(c, assemble(text, a.program, d), mode=m)
+                    print(out.report())
+                    ok = ok and out.proved
+                return 0 if ok else 1
+            out = prove_k(load_k(cpath), assemble(text, a.program))
             print(out.report())
             return 0 if out.proved else 1
         c = load_contract(cpath)

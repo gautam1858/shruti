@@ -1,6 +1,7 @@
-# Contract for spi_master.s: mode 0, MSB first, one byte per chip select.
+# Contract for spi_master.s: modes 0-3, MSB first, one byte per chip select.
 program: spi_master.s
 kind: spi_master
+modes: [0, 1, 2, 3]              # each proved on the program built with CPOL, CPHA
 assume:
   P: {min: 5, max: 65535}          # half the SCK period in cycles, written by the host
   pins: {sck: B2, mosi: B3, miso: M1, cs: B5}
