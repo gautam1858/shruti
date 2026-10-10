@@ -22,7 +22,7 @@ The RP2040's PIO is cycle-exact, but its timing is relative to its own instructi
 2. `IN pin @ T+d`: hardware samples the pin at a computed future time, so a mid-bit read is one instruction.
 3. Edge-latched snapshot: all 12 watchable pins are latched as they stood at the matched edge, so a slave reads data at the clock edge, not several cycles later.
 
-Two Event Machines, 16-bit instructions, 32 words each. Measured on the simulator: UART transmit is 12 words, UART receive 17, SPI master 19, SPI slave 18 (15 with CPHA = 1) and I2C master 32.
+Two Event Machines, 16-bit instructions, 32 words each. Measured on the simulator: UART transmit is 12 words, UART receive 17, SPI master 19, SPI slave 18 (15 with CPHA = 1), I2C master 32 and I2C target 32.
 
 ## The Ear: identify, abstain, learn
 
@@ -36,7 +36,7 @@ Four host-configured rule monitors match an edge, a guard over the pin snapshot 
 
 ## Proof-carrying firmware
 
-Every protocol program is meant to ship with a machine-checked proof that it meets its contract; today UART transmit and receive, SPI master and I2C master do, and the SPI slave is tested but not yet proved. `shruti prove` symbolically executes the ISS over the program with the data bytes and the bit period left symbolic and hands the arithmetic to Z3; a proof or a counterexample trace comes back in seconds, and `shruti load` will refuse an unproven program (planned; the CLI has `prove` and `train` today). The RTL is tied to the ISS by cycle-exact differential testing and by 27 SymbiYosys properties of the Event Machine; a bounded formal equivalence check against a transliteration of the ISS is planned. The aim is that an LLM writes the firmware for a new protocol and nobody has to read it, because the prover accepts or rejects it; that demo is planned for 20 Dec. Nobody proves PIO programs; Shruti's are small enough to prove.
+Every protocol program is meant to ship with a machine-checked proof that it meets its contract; today UART transmit and receive, SPI master and I2C master do, and the SPI slave and I2C target are tested but not yet proved. `shruti prove` symbolically executes the ISS over the program with the data bytes and the bit period left symbolic and hands the arithmetic to Z3; a proof or a counterexample trace comes back in seconds, and `shruti load` will refuse an unproven program (planned; the CLI has `prove` and `train` today). The RTL is tied to the ISS by cycle-exact differential testing and by 27 SymbiYosys properties of the Event Machine; a bounded formal equivalence check against a transliteration of the ISS is planned. The aim is that an LLM writes the firmware for a new protocol and nobody has to read it, because the prover accepts or rejects it; that demo is planned for 20 Dec. Nobody proves PIO programs; Shruti's are small enough to prove.
 
 ## Stretch: 10 Mbit Ethernet
 
@@ -63,7 +63,7 @@ Planned: protocol-level cocotb bus models with mutation tests, formal properties
 
 Spec v1.0: 23 Sep 2026, with the ISA reconciled to v1.1 (`docs/isa-decisions.md`). RTL in Verilog.
 
-### Built and tested (as of commit 0b160d7, 10 Oct 2026)
+### Built and tested (as of commit df5096b, 10 Oct 2026)
 
 Every line names its evidence; the GitHub Actions in `.github/workflows` run all of it on every push.
 - **Event Machines** (two), the 24-bit timestamp counter, the 12-pin input path with its glitch filter, the pin drivers and the host SPI (`src/`, `docs/host-interface.md`). They match the ISS in every register, FIFO and pin, every cycle, over 60 random two-EM programs with random pins and host traffic (`test/test.py`: `event_machines_match_the_iss`), plus directed FIFO corner tests (`tx_fifo_write_in_the_cycle_of_a_pull`, `rx_fifo_two_byte_push_wraps`, `rx_fifo_read_in_the_cycle_after_a_push`) and the input path against its reference (`input_path_matches_reference_model`, `glitch_filter_modes`).
@@ -74,8 +74,8 @@ Every line names its evidence; the GitHub Actions in `.github/workflows` run all
 - **Physical:** 50 MHz met at all three corners, slow-corner setup slack +4.24 ns, 68.6% utilisation, 0 DRC and 0 antenna violations, precheck passing (commit fcafc0b, spec section 8). The `signoff` job fails the build on negative slack, DRC, antenna or LVS errors (`verify/signoff.py`).
 - **ISS** (`iss/`), generated from `isa/isa.yaml`: every instruction and scheduler rule (`iss/tests`).
 - **Assembler and disassembler** (`asm/`): round trip over all 65,536 words; conditional assembly and `-D` overrides, so one source builds every SPI mode.
-- **Firmware** (`fw/`): UART transmit and receive, SPI master and slave in each of modes 0-3, I2C master, each tested on the ISS against a model of the peer device, with injected faults (`fw/tests`).
-- **Proofs** (`prove/`, `python -m shruti prove`): UART transmit (any number of frames), UART receive, SPI master (each of modes 0-3) and I2C master against their contracts, with counterexamples replayed on the ISS.
+- **Firmware** (`fw/`): UART transmit and receive, SPI master and slave in each of modes 0-3, I2C master at 100 and 400 kHz, and an I2C target that receives writes (the host answers each ACK), each tested on the ISS against a model of the peer device, with injected faults (`fw/tests`).
+- **Proofs** (`prove/`, `python -m shruti prove`): UART transmit (any number of frames), UART receive, SPI master (each of modes 0-3) and I2C master (standard and fast builds) against their contracts, with counterexamples replayed on the ISS.
 - **Ear training and evaluation** (`ear/`): the bit-exact reference, the protocol simulator, a trained model (86.6% test accuracy on simulated buses, 99.5% when confident) and its evaluation in `ear/REPORT.md` (coverage by speed, foreign signals, held-out classes, float against integer; `ear/evaluate.py`).
 
 ### Planned
@@ -85,9 +85,9 @@ Dates from the spec's milestones:
 - FPGA bring-up on a Tang Nano 20K against a USB-UART adapter, an SPI flash and an I2C sensor: 6 Dec 2026.
 - The classifier proof; formal properties for edge capture and the recorder; a bounded equivalence check of the Event Machine against an ISS transliteration: 13 Dec 2026.
 - A prescaler for the Ear's timebase so slow buses get answers, and better training for fast UARTs: before the feature freeze, 20 Dec 2026.
-- `shruti teach` and `shruti load` (which refuses unproven programs), a proof for the SPI slave, and the "LLM writes PS/2 firmware, the prover accepts it" demo: 20 Dec 2026; demos count only if passing by then.
+- `shruti teach` and `shruti load` (which refuses unproven programs), proofs for the SPI slave and the I2C target, and the "LLM writes PS/2 firmware, the prover accepts it" demo: 20 Dec 2026; demos count only if passing by then.
 - The measured LLM red team (mutations and candidate properties proposed from the ISA, bug yield reported per method): in the verification report, 12 Jan 2027.
-- The organisers' standard settings still open: I2C at 100 and 400 kHz (the master's equal half-periods cap fast mode at about 385 kHz today) and an I2C target: before the feature freeze, 20 Dec 2026.
+- An I2C target that can be read as well as written: the write target fills 32 words, so reads need their own program or the 64-word option: before the feature freeze, 20 Dec 2026.
 - Low-speed USB and the Ethernet stretch: only if passing by 20 Dec 2026.
 
 ### Known limitations

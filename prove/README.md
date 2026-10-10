@@ -28,6 +28,6 @@ smallest P for which the contract holds: 3
   - What is proved: the START; SCL low and high phases of at least P, stretching included; SDA stable and correct while SCL is high; the ACK/NACK handling; the STOP; and the NACK flag.
   - Not yet proved: the bus-free time between two transactions (the ISS tests measure it).
 
-Still to come: the SPI slave, and the I2C bus-free time across transactions.
+Still to come: the SPI slave, the I2C target, and the I2C bus-free time across transactions.
 
 Tests: `python -m pytest prove`.
