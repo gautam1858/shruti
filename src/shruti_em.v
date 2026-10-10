@@ -645,4 +645,173 @@ module shruti_em (
     end
   end
 
+`ifdef FORMAL
+  // ------------------------------------------------------------------------------------
+  // Formal properties, proved with SymbiYosys (verify/em.sby). Each assertion carries the ID
+  // of its property in verify/README.md. Immediate assertions with $past only: open-source
+  // Yosys has no SVA front end. Times are computed here from isa.yaml (T + d, T + 2^n and
+  // the modular "future"), not from the RTL's dT register or its carry-free comparators,
+  // so the properties check those. Program memory, pins, SYNC flags and the host are free.
+  reg f_past = 1'b0;
+  always @(posedge clk) f_past <= 1'b1;
+
+  // environment: what src/project.v guarantees
+  initial assume (!rst_n);
+  always @* assume (cnt_p1 == cnt + 24'd1);
+  always @* if (!rst_n) assume (!run);
+  always @(posedge clk) if (f_past) begin
+    assume (cnt == $past(cnt_p1));                 // the counter steps by one every cycle
+    assume (vis_prev == $past(vis));
+    if (!$past(rst_n)) assume (!run);              // run is a register that reset clears
+  end
+
+  function future(input [23:0] t, input [23:0] c);   // isa.yaml timing.future
+    reg [23:0] d;
+    begin
+      d = t - c;
+      future = (d != 24'd0) && !d[23];
+    end
+  endfunction
+
+  wire        f_live  = f_past && rst_n;
+  wire        f_exec  = f_live && run && !halted;
+  wire [23:0] f_td    = T + {18'd0, instr[5:0]};            // OUT and IN target, T + d
+  wire [23:0] f_dl    = T + (24'd1 << w_tmo);               // WAIT deadline, T + 2^n
+  wire        f_dl_ok = (w_mode <= 3'd4) && (w_tmo <= 5'd23) && (pin4 <= 4'd11);
+  // isa.yaml, HALT: opcodes 0 and 12-15, and every illegal operand
+  wire        f_illegal =
+      (op == 4'd0) || (op >= 4'd12) ||
+      (op == 4'd1 && !f_dl_ok) ||
+      (op == 4'd2 && pin4 > 4'd7) ||
+      (op == 4'd3 && pin4 > 4'd11) ||
+      (op == 4'd9 && s_tgt == 2'd0 && s_pin > 4'd7) ||
+      (op == 4'd10 && (j_cond > 3'd4 || (j_cond == 3'd0 && j_sel > 4'd4) ||
+                       (j_cond >= 3'd3 && j_sel > 4'd11)));
+
+  // ---- time bookkeeping: the invariants the rest stands on
+  always @* if (f_live) begin
+    assert (dT == T - cnt);                                     // T1
+    if (!tp) assert (!dT[23]);                                  // T2
+    if (run && !halted) assert (addend == operand(instr, P));   // T3
+    if (s_busy[0]) assert (!future(cnt_p1, s_time0));           // S1
+    if (s_busy[1]) assert (!future(cnt_p1, s_time1));           // S1
+  end
+
+  // ---- scheduler and LATE (isa.yaml OUT, IN, WAIT, timing.late)
+  always @* if (f_exec) begin
+    if (op == 4'd2 && done) begin
+      if (future(f_td, cnt)) begin
+        assert ((arm && tgt == f_td) || (arm_now && f_td == cnt_p1));   // S2
+        assert (n_late == f_late);                                      // S2
+      end else begin
+        assert (arm_now && n_late);                                     // S3
+      end
+    end
+    if (op == 4'd2 && pin4 <= 4'd7 && s_busy == 2'b11) assert (!done && !arm && !arm_now);  // S4
+    if (op == 4'd3 && pin4 <= 4'd11 && !i_snap && !sampled) begin
+      if (!blk) begin
+        assert (do_sample == !future(f_td, cnt));                                // I1
+        assert (n_late == (f_late || (f_td != cnt && !future(f_td, cnt))));      // I1
+      end else begin
+        assert (!future(cnt, f_td));                                             // I2
+        assert (do_sample == (f_td == cnt));                                     // I2
+        assert (n_late == f_late);                                               // I2
+      end
+    end
+    if (op == 4'd1 && f_dl_ok && w_tmo != 5'd0 && !match) begin
+      if (blk) assert (!future(cnt, f_dl));                                      // W1
+      assert (to_now == !future(f_dl, cnt));                                     // W1
+    end
+  end
+  always @(posedge clk) if (f_live && $past(f_live)) begin
+    if ($past(f_exec && arm)) begin
+      if (!$past(s_busy[0]))
+        assert (s_busy[0] && s_time0 == $past(tgt) && s_pin0 == $past(arm_pin) && s_val0 == $past(arm_lvl));  // S5
+      else
+        assert (s_busy[1] && s_time1 == $past(tgt) && s_pin1 == $past(arm_pin) && s_val1 == $past(arm_lvl));  // S5
+    end
+    if ($past(fire0)) assert (!s_busy[0]);                                       // S6
+    if ($past(fire1)) assert (!s_busy[1]);                                       // S6
+    if ($past(f_exec && op == 4'd1 && f_dl_ok && w_tmo != 5'd0 && !match && to_now))
+      assert (f_to && T == $past(f_dl));                                         // W2
+    if ($past(f_exec && op == 4'd1 && f_dl_ok && match))
+      assert (T == $past(cnt) && snapshot == $past(vis));                        // W3
+  end
+  always @* if (f_live && run) begin
+    if (fire0) assert (drv_en[s_pin0]);                                          // S7
+    if (fire1) assert (drv_en[s_pin1]);                                          // S7
+    if (fire0 && !(fire1 && s_ord && s_pin1 == s_pin0) && !(arm_now && arm_pin == s_pin0) &&
+        !(set_now && set_pin == s_pin0))
+      assert (drv_lvl[s_pin0] == s_val0);                                        // S7
+    if (fire1 && !(fire0 && !s_ord && s_pin0 == s_pin1) && !(arm_now && arm_pin == s_pin1) &&
+        !(set_now && set_pin == s_pin1))
+      assert (drv_lvl[s_pin1] == s_val1);                                        // S7
+  end
+
+  // ---- FIFOs (isa.yaml PUSH, PULL, OUT; docs/host-interface.md)
+  always @* if (f_live) begin
+    assert (tx_cnt <= 3'd4 && rx_cnt <= 3'd4);                                   // F1
+    if (pull_now) assert (tx_cnt >= tx_pop_n);                                   // F2
+    if (push_now) assert (rx_cnt + rx_push_n <= 3'd4);                           // F3
+  end
+  always @* if (f_exec) begin
+    if (op == 4'd7) begin
+      if (done && !push_now) assert (n_ovf && n_isr == 16'd0 && n_isr_cnt == 5'd0);  // F4
+      if (blockb && !can_push) assert (!done);                                   // F4
+    end
+    if (op == 4'd3 && done && autopush && sampled_e && isr_cnt_e >= in_w)
+      assert (push_now);                                                         // F5
+    if (op == 4'd8) begin
+      if (can_pull) assert (done && pull_now);                                   // F6
+      else if (blockb) assert (!done);                                           // F6
+      else assert (done && !pull_now && n_osr == osr && n_osr_cnt == osr_cnt);   // F6
+    end
+    if (op == 4'd2 && pin4 <= 4'd7 && o_val == 2'd2 && osr_empty) begin
+      if (!autopull && done) assert (n_unf && n_osr_cnt == osr_cnt);             // F7
+      if (autopull && !can_pull) assert (!done);                                 // F7
+    end
+  end
+  always @(posedge clk) if (f_live && $past(f_live)) begin
+    assert (tx_cnt == $past(tx_cnt) - $past(tx_pop_n) +
+            {2'd0, $past(tx_push) && ($past(tx_cnt) - $past(tx_pop_n) != 3'd4)});   // F8
+    assert (rx_cnt == $past(rx_cnt) + $past(rx_push_n) -
+            {2'd0, $past(rx_pop) && ($past(rx_cnt) != 3'd0)});                      // F8
+  end
+
+  // ---- HALT and the PC (isa.yaml HALT, program_words)
+  always @* if (f_exec) begin
+    assert (halt_now == f_illegal);                                              // H1
+    if (halt_now)
+      assert (!done && !pull_now && !push_now && !arm && !arm_now && !set_now && !t_we &&
+              sync_out == sync_in);                                              // H2
+  end
+  always @* if (f_live && run && halted)
+    assert (!done && !pull_now && !push_now && !arm && !arm_now && !set_now && !t_we);  // H2
+  always @(posedge clk) if (f_live && $past(f_live)) begin
+    if ($past(run) && run && ($past(halted) || $past(f_exec && halt_now)))
+      assert (halted && pc == $past(pc));                                        // H3
+    if ($past(f_exec))
+      assert (pc == ($past(done) ? ($past(jump) ? $past(instr[4:0]) : $past(pc) + 5'd1)
+                                 : $past(pc)));                                  // H4
+    if (!$past(run)) assert (pc == 5'd0 && !halted);                             // H4
+  end
+
+  // ---- reachability: each scenario above happens (verify/em.sby, task cover)
+  always @* if (f_live && run) begin
+    cover (fire0 && s_time0 == f_td + 24'd2);                   // a slot fires after another OUT
+    cover (fire1 && fire0);                                     // both slots fire together
+    cover (f_exec && op == 4'd2 && done && arm_now && !n_late && !f_late);   // OUT one cycle ahead
+    cover (f_exec && op == 4'd2 && done && n_late && !f_late);  // OUT late
+    cover (f_exec && op == 4'd3 && blk && do_sample);           // IN@ waited, then sampled
+    cover (f_exec && op == 4'd3 && !blk && n_late && !f_late);  // IN@ late
+    cover (f_exec && op == 4'd1 && blk && to_now);              // WAIT timed out after waiting
+    cover (f_exec && op == 4'd1 && blk && match);               // WAIT matched after waiting
+    cover (f_exec && op == 4'd7 && done && !push_now);          // PUSH dropped, OVF
+    cover (f_exec && op == 4'd8 && blk && pull_now);            // PULL waited for the host
+    cover (tx_push && tx_cnt == 3'd4 && !pull_now);             // host write to a full TX FIFO
+    cover (rx_cnt == 3'd4 && f_exec && op == 4'd7 && blk);      // PUSH blocked on a full RX FIFO
+    cover (halted && pc == 5'd3);                               // halted after running
+  end
+`endif
+
 endmodule

@@ -5,7 +5,10 @@ Converts the ISA's text form (see `docs/architecture-spec.md`, "Event-native dat
 ```
 python -m asm prog.s -o prog.hex     # assemble; errors are reported as file:line: message
 python -m asm -d prog.hex            # disassemble, with L<n> labels for jump targets
+python -m asm fw/spi_master.s -D CPOL=1 -D CPHA=1   # override .equ values (SPI mode 3)
 ```
+
+One source can give several variants of a program: `.if name` / `.if !name` / `.else` / `.endif` select lines on an `.equ` value, `.define name text` swaps an operand token (for example `.define LEAD rise`), and `-D` (or `defines=` in Python, or keyword arguments to `fw.load`) overrides an `.equ`. A define that names no `.equ` in the program is an error.
 
 ```python
 from asm import assemble, disassemble
