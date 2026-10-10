@@ -231,52 +231,65 @@ from fw.peers import Wire, spi_master_stimulus  # noqa: E402
 S_SCK, S_MOSI, S_CS, S_MISO = 8, 10, 11, 4
 
 
-def run_spi_slave(out, replies, half, setup):
-    stim, rises = spi_master_stimulus(S_SCK, S_MOSI, S_CS, out, half, setup)
-    sim = Sim([fw.load("spi_slave")], stimulus=stim, initial={S_CS: 1, S_SCK: 0, S_MOSI: 1},
+def spi_slave(mode):
+    return fw.load("spi_slave", CPOL=mode >> 1, CPHA=mode & 1)
+
+
+def run_spi_slave(out, replies, half, setup, mode=0):
+    stim, samples = spi_master_stimulus(S_SCK, S_MOSI, S_CS, out, half, setup, mode=mode)
+    sim = Sim([spi_slave(mode)], stimulus=stim,
+              initial={S_CS: 1, S_SCK: mode >> 1, S_MOSI: 1},
               host_tx=[[(0, b) for b in replies]])
     res = sim.run(max(c for c, _, _ in stim) + 200)
-    got = [sum(res.level_at(S_MISO, t) << (7 - k) for k, t in enumerate(r)) for r in rises]
+    got = [sum(res.level_at(S_MISO, t) << (7 - k) for k, t in enumerate(r)) for r in samples]
     return sim, res, got
 
 
+@pytest.mark.parametrize("mode", [0, 1, 2, 3])
 @pytest.mark.parametrize("half,setup", [(4, 5), (8, 8), (40, 40), (1000, 1000)])
-def test_spi_slave_against_master_model(half, setup):
-    rng = random.Random(half)
+def test_spi_slave_against_master_model(mode, half, setup):
+    rng = random.Random(4 * half + mode)
     out = [rng.randrange(256) for _ in range(5)]
     replies = [rng.randrange(256) for _ in range(5)]
-    sim, res, got = run_spi_slave(out, replies, half, setup)
+    sim, res, got = run_spi_slave(out, replies, half, setup, mode)
     assert res.host_rx[0] == out
     assert got == replies
     assert not res.ems[0].LATE and not res.ems[0].OVF
     assert sim.oe[S_MISO] == 0                  # MISO released after the last byte
 
 
-def test_spi_slave_limits():
-    """Measured: 4 cycles from CS to the first rise is too short for MISO bit 7, SCK phases
-    of 3 cycles corrupt MISO, and phases of 2 cycles lose MOSI bits."""
+@pytest.mark.parametrize("mode", [0, 1, 2, 3])
+def test_spi_slave_limits(mode):
+    """Measured: SCK phases of 3 cycles corrupt MISO and phases of 2 cycles lose MOSI bits,
+    in every mode. From CS to the first leading edge, CPHA = 0 needs 5 cycles (with 4, MISO
+    bit 7 is late) and CPHA = 1 needs 3 (with 2, the slave misses the first edge)."""
     out, replies = [0xA5, 0x3C], [0x5A, 0xC3]
-    assert run_spi_slave(out, replies, 4, 4)[2] != replies
-    assert run_spi_slave(out, replies, 3, 5)[2] != replies
-    assert run_spi_slave(out, replies, 3, 5)[1].host_rx[0] == out
-    assert run_spi_slave(out, replies, 2, 5)[1].host_rx[0] != out
+    setup = 3 if mode & 1 else 5
+    assert run_spi_slave(out, replies, 4, setup, mode)[2] == replies
+    assert run_spi_slave(out, replies, 4, setup - 1, mode)[2] != replies
+    assert run_spi_slave(out, replies, 3, 5, mode)[2] != replies
+    assert run_spi_slave(out, replies, 3, 5, mode)[1].host_rx[0] == out
+    assert run_spi_slave(out, replies, 2, 5, mode)[1].host_rx[0] != out
 
 
-def test_spi_master_and_slave_on_two_ems():
-    """EM0 runs spi_master, EM1 runs spi_slave; the board wires them together."""
-    P = 9                                      # the smallest P this pairing supports
+@pytest.mark.parametrize("mode", [0, 1, 2, 3])
+def test_spi_master_and_slave_on_two_ems(mode):
+    """EM0 runs spi_master, EM1 runs spi_slave, in the same mode; the board wires them
+    together."""
+    P = 8 if mode & 1 else 9                   # the smallest P this pairing supports
     out = [0x12, 0xFE, 0x81]
     replies = [0xC0, 0x0F, 0x55]
-    wires = Wire([(SCK, S_SCK), (MOSI, S_MOSI), (CS, S_CS), (S_MISO, MISO)])
-    sim = Sim([fw.load("spi_master"), fw.load("spi_slave")], P=[P, 0], devices=[wires],
-              host_tx=[[(100, b) for b in out], [(0, b) for b in replies]])
-    res = sim.run(3000)
+
+    def run(p):
+        wires = Wire([(SCK, S_SCK), (MOSI, S_MOSI), (CS, S_CS), (S_MISO, MISO)])
+        sim = Sim([spi_master(mode), spi_slave(mode)], P=[p, 0], devices=[wires],
+                  host_tx=[[(100, b) for b in out], [(0, b) for b in replies]])
+        return sim.run(3000)
+
+    res = run(P)
     assert res.host_rx[0] == replies           # master received the slave's replies
     assert res.host_rx[1] == out               # slave received the master's bytes
     assert not res.ems[0].LATE and not res.ems[1].LATE
     # One cycle less and the master misreads MISO, with no flag raised.
-    sim = Sim([fw.load("spi_master"), fw.load("spi_slave")], P=[P - 1, 0],
-              devices=[Wire([(SCK, S_SCK), (MOSI, S_MOSI), (CS, S_CS), (S_MISO, MISO)])],
-              host_tx=[[(100, b) for b in out], [(0, b) for b in replies]])
-    res = sim.run(3000)
+    res = run(P - 1)
     assert res.host_rx[0] != replies and not res.ems[0].LATE

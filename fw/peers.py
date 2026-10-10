@@ -226,36 +226,49 @@ def i2c_timing(trace: Sequence[Tuple[int, int, int]], scl: int, sda: int):
 
 
 def spi_master_stimulus(sck: int, mosi: int, cs: int, data: Sequence[int], half: int,
-                        setup: int, start: int = 20, gap: int = 50):
-    """Mode-0 SPI master as stimulus: CS falls with MOSI bit 7, SCK rises `setup` cycles
-    later, each SCK phase lasts `half` cycles, MOSI changes on falling edges. Returns the
-    edges and, per byte, the rising-edge cycles (where the master samples MISO)."""
+                        setup: int, start: int = 20, gap: int = 50, mode: int = 0):
+    """SPI master as stimulus, in any mode (CPOL = mode >> 1, CPHA = mode & 1). SCK idles at
+    CPOL. CS falls, the first leading edge comes `setup` cycles later and each SCK phase
+    lasts `half` cycles. CPHA = 0: MOSI bit 7 goes out with CS and later bits on trailing
+    edges, and the master samples on leading edges. CPHA = 1: each MOSI bit goes out on a
+    leading edge and the master samples on trailing edges. Returns the edges and, per byte,
+    the cycles at which the master samples MISO."""
+    cpol, cpha = mode >> 1, mode & 1
     edges: List[Tuple[int, int, int]] = []
-    rises: List[List[int]] = []
+    samples: List[List[int]] = []
     t = start
     mosi_level = 1
+
+    def put(c, bit):
+        nonlocal mosi_level
+        if bit != mosi_level:
+            edges.append((c, mosi, bit))
+            mosi_level = bit
+
     for byte in data:
         edges.append((t, cs, 0))
         r = []
         bits = [(byte >> (7 - k)) & 1 for k in range(8)]
-        if bits[0] != mosi_level:
-            edges.append((t, mosi, bits[0]))
-            mosi_level = bits[0]
-        rise = t + setup
+        if cpha == 0:
+            put(t, bits[0])
+        lead = t + setup
         for k in range(8):
-            edges.append((rise, sck, 1))
-            r.append(rise)
-            fall = rise + half
-            edges.append((fall, sck, 0))
-            if k < 7 and bits[k + 1] != mosi_level:
-                edges.append((fall, mosi, bits[k + 1]))
-                mosi_level = bits[k + 1]
-            rise = fall + half
-        t = rise
+            edges.append((lead, sck, 1 - cpol))
+            trail = lead + half
+            edges.append((trail, sck, cpol))
+            if cpha == 0:
+                r.append(lead)
+                if k < 7:
+                    put(trail, bits[k + 1])
+            else:
+                put(lead, bits[k])
+                r.append(trail)
+            lead = trail + half
+        t = lead
         edges.append((t, cs, 1))
-        rises.append(r)
+        samples.append(r)
         t += gap
-    return edges, rises
+    return edges, samples
 
 
 class Wire(Device):
