@@ -165,27 +165,40 @@ SCL, SDA = 6, 7
 I2C_CFG = {"OUT_MSB": 1, "OUT_N": 7}
 
 
-def run_i2c(data, P, slave, cycles=None, arrivals=None):
+def run_i2c(data, P, slave, cycles=None, arrivals=None, fast=0):
     arrivals = arrivals or [0] * len(data)
-    sim = Sim([fw.load("i2c_master")], P=[P], cfg=[I2C_CFG], devices=[slave],
+    sim = Sim([fw.load("i2c_master", FAST=fast)], P=[P], cfg=[I2C_CFG], devices=[slave],
               host_tx=[list(zip(arrivals, data))])
     return sim.run(cycles or (len(data) + 2) * 25 * P + 1000)
 
 
-@pytest.mark.parametrize("P", [65, 250])      # ~385 kHz and 100 kHz at 50 MHz
-def test_i2c_write_transaction(P):
+# (FAST, P, SCL period in cycles at 50 MHz, I2C minimum tLOW and tHIGH in cycles)
+I2C_SPEEDS = [
+    (0, 249, 500, 235, 200),     # standard mode, 100.0 kHz: tLOW 4.7 us, tHIGH 4.0 us
+    (1, 82, 125, 65, 30),        # fast mode, 400.0 kHz: tLOW 1.3 us, tHIGH 0.6 us
+    (1, 65, 99, 65, 30),         # fast mode's shortest legal tLOW (faster than 400 kHz)
+    (0, 65, 132, 65, 30),        # equal halves at the same P: 378.8 kHz
+]
+
+
+@pytest.mark.parametrize("fast,P,period,t_low,t_high", I2C_SPEEDS)
+def test_i2c_write_transaction(fast, P, period, t_low, t_high):
     slave = I2cSlave(SCL, SDA, address=0x50)
     data = [0x50 << 1, 0x12, 0xA5, 0x00]
-    res = run_i2c(data, P, slave)
+    res = run_i2c(data, P, slave, fast=fast)
     assert slave.transactions == [data]
     assert [e for _, e in slave.events] == ["START", "ACK", "ACK", "ACK", "ACK", "STOP"]
     assert slave.errors == [] and res.sync[1] == 0 and not res.ems[0].LATE
     t = i2c_timing(res.trace, SCL, SDA)
-    assert t["low"] >= P and t["high"] >= P and t["start_hold"] >= P and t["stop_setup"] >= P
-    # Against the I2C minimums at 50 MHz (20 ns/cycle): fast mode needs tLOW 1.3 us,
-    # tHIGH 0.6 us; standard mode tLOW 4.7 us, tHIGH 4.0 us.
-    lo, hi = (65, 30) if P < 250 else (235, 200)
-    assert t["low"] >= lo and t["high"] >= hi
+    high = P >> fast
+    assert t["low"] >= P and t["high"] >= high and t["start_hold"] >= high
+    assert t["stop_setup"] >= P
+    assert t["period"] == period                 # every clock, ACK clocks included
+    assert t["low"] >= t_low and t["high"] >= t_high
+
+
+def test_i2c_fast_build_is_the_same_size():
+    assert len(fw.load("i2c_master", FAST=1)) == len(fw.load("i2c_master")) == 32
 
 
 def test_i2c_nack_on_address_stops_and_flags():

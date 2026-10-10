@@ -22,7 +22,7 @@ smallest P for which the contract holds: 3
 - **Inputs and branches:** the executor forks on branches that depend on symbolic inputs (WAIT, JMP on a pin), keeps only paths whose condition is satisfiable, and can take input waveforms with symbolic edge times and levels. `run()` handles single-path programs; `paths()` returns every feasible path.
 - **Trust:** `prove/tests` checks the symbolic executor against the ISS on the UART program and five broken variants with random concrete values.
 
-- **I2C master:** `fw/i2c_master.contract.yaml` (kind `i2c_master`) proves one write transaction, START to STOP, against a symbolic slave. The slave ACKs or NACKs each byte, may stretch the clock after every ACK, and answers 1 or 2 cycles after each edge. It covers P = 65..2,000 and runs in about 25 s.
+- **I2C master:** `fw/i2c_master.contract.yaml` (kind `i2c_master`) proves one write transaction, START to STOP, against a symbolic slave. The slave ACKs or NACKs each byte, may stretch the clock after every ACK, and answers 1 or 2 cycles after each edge. It covers P = 65..2,000 for each speed grade the contract lists: SCL high (and the START hold) at least P in the standard build and at least P/2 in the fast build (`FAST = 1`), each in about 30 s.
   - Both lines are open-drain. Each pad is the wired-AND of the program's own drives and the slave, and is rebuilt from the program's events whenever the program reads the line.
   - A WAIT considers only the 6 most recent drive edges, and proves as an obligation that every older edge was already visible when the WAIT began.
   - What is proved: the START; SCL low and high phases of at least P, stretching included; SDA stable and correct while SCL is high; the ACK/NACK handling; the STOP; and the NACK flag.

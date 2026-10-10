@@ -3,8 +3,11 @@
 program: i2c_master.s
 kind: i2c_master
 loop: top
+modes:                             # each proved on the program assembled with its defines
+  - {name: standard, defines: {FAST: 0}, high: P}      # SCL high at least P
+  - {name: fast, defines: {FAST: 1}, high: P/2}        # SCL high at least P/2
 assume:
-  P: {min: 65, max: 2000}          # half the SCL period (65 = fast-mode tLOW at 50 MHz)
+  P: {min: 65, max: 2000}          # the SCL low time (65 = fast-mode tLOW at 50 MHz)
   pins: {scl: B6, sda: B7}
   cfg: {OUT_MSB: 1, OUT_N: 7}      # written by the host (the program has no room for SHIFT)
   bytes: [d0, d1]                  # address byte and one data byte, queued together

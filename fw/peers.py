@@ -193,17 +193,20 @@ class I2cSlave(Device):
 
 
 def i2c_timing(trace: Sequence[Tuple[int, int, int]], scl: int, sda: int):
-    """Measure I2C timing from the pad trace: SCL low and high widths, START hold, STOP setup
-    and bus-free time. Returns a dict of minimum values (cycles)."""
+    """Measure I2C timing from the pad trace: SCL low and high widths, SCL period (rise to
+    rise), START hold, STOP setup and bus-free time. Returns a dict of minimum values
+    (cycles)."""
     edges = sorted((c, p, v) for (c, p, v) in trace if p in (scl, sda))
     lvl = {scl: 1, sda: 1}
     last = {(scl, 0): None, (scl, 1): None, (sda, 0): None, (sda, 1): None}
-    low, high, hold, setup, buf = [], [], [], [], []
+    low, high, hold, setup, buf, period = [], [], [], [], [], []
     last_start = last_stop = None
     for c, p, v in edges:
         if p == scl:
             if v == 1 and last[(scl, 0)] is not None:
                 low.append(c - last[(scl, 0)])
+            if v == 1 and last[(scl, 1)] is not None:
+                period.append(c - last[(scl, 1)])
             if v == 0 and last[(scl, 1)] is not None:
                 high.append(c - last[(scl, 1)])
             if v == 0 and last_start is not None:
@@ -221,8 +224,8 @@ def i2c_timing(trace: Sequence[Tuple[int, int, int]], scl: int, sda: int):
         lvl[p] = v
         last[(p, v)] = c
     m = lambda xs: min(xs) if xs else None
-    return {"low": m(low), "high": m(high), "start_hold": m(hold), "stop_setup": m(setup),
-            "bus_free": m(buf)}
+    return {"low": m(low), "high": m(high), "period": m(period), "start_hold": m(hold),
+            "stop_setup": m(setup), "bus_free": m(buf)}
 
 
 def spi_master_stimulus(sck: int, mosi: int, cs: int, data: Sequence[int], half: int,
