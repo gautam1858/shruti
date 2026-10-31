@@ -163,8 +163,11 @@ class Report:
 
 
 def train(captures_per_class: int = 60, seed: int = 1, classes: Sequence[str] = ps.CLASSES,
-          tc: TrainConfig = TrainConfig(), unknown: Sequence[str] = ()) -> Tuple[Model, Report]:
-    ds = build(captures_per_class, seed, classes)
+          tc: TrainConfig = TrainConfig(), unknown: Sequence[str] = (),
+          ds: Optional[Dataset] = None) -> Tuple[Model, Report]:
+    """Train on build(captures_per_class, seed, classes), or on `ds` if given (it must be
+    that same dataset; ear.evaluate passes it in to reuse the split)."""
+    ds = ds if ds is not None else build(captures_per_class, seed, classes)
     (Xtr, ytr, _), (Xva, yva, eva), (Xte, yte, ete) = split(ds, seed)
     cls_idx = [ps.CLASSES.index(c) for c in classes]
     best = None

@@ -1,0 +1,27 @@
+# Event Machine properties (the FORMAL block at the end of src/shruti_em.v).
+# Run from this directory:
+#   sby -f em.sby prove   k-induction: every assertion holds in every reachable state
+#   sby -f em.sby cover   every cover statement is reachable (the properties are not vacuous)
+#   sby -f em.sby bmc     bounded check, used by mutate.py to show planted bugs fail
+[tasks]
+prove
+cover
+bmc
+
+[options]
+prove: mode prove
+prove: depth 4
+cover: mode cover
+cover: depth 24
+bmc: mode bmc
+bmc: depth 20
+
+[engines]
+smtbmc z3
+
+[script]
+read_verilog -formal -sv shruti_em.v
+prep -top shruti_em
+
+[files]
+../src/shruti_em.v

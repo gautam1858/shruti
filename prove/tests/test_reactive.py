@@ -23,6 +23,8 @@ BROKEN = {
     "7 data bits": ("        SET   X, 7", "        SET   X, 6"),
     "no wait for the stop bit": (
         "        ADDT  P                  ; middle of the stop bit\n"
+        ".if SLOW\n        ADDT  P                  ; SLOW: P is a third of the bit period\n"
+        "        ADDT  P\n.endif\n"
         "        IN    rx @T+0            ; wait until then (ISR is full, the sample is dropped)\n", ""),
     "sampling at the bit edge": ("        ADDT  P/2                ; middle of the start bit",
                                  "        ADDT  P                  ; middle of the start bit"),

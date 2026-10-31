@@ -31,3 +31,7 @@ _opam/
 # Synthesis output (synth/synth.sh)
 synth/out/
 test/pytest-results.xml
+
+# SymbiYosys work directories
+verify/em/
+verify/em_*/

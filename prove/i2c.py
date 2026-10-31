@@ -10,7 +10,8 @@ rebuilt from the program's events every time the program reads a line.
 The contract, checked on every feasible path with bytes, ACKs, stretch lengths, the slave's
 delay and the half period all symbolic:
   - START: SDA falls while SCL is high;
-  - every SCL low and high phase at the pads lasts at least P, stretching included;
+  - every SCL low phase at the pads lasts at least P, and every high phase (and the START hold)
+    at least the mode's high time, P or P/2, stretching included;
   - SDA is stable while SCL is high, carries each byte MSB first, and carries the slave's
     ACK or NACK in the ninth clock;
   - bytes are clocked until the first NACK or until the bytes run out, then a STOP: SDA rises
@@ -20,6 +21,9 @@ delay and the half period all symbolic:
 
     program: i2c_master.s
     kind: i2c_master
+    modes:                               # each proved on the program built with its defines
+      - {name: standard, defines: {FAST: 0}, high: P}
+      - {name: fast, defines: {FAST: 1}, high: P/2}
     assume:
       P: {min: 65, max: 2000}
       pins: {scl: B6, sda: B7}
@@ -47,6 +51,20 @@ from .symex import AndSignal, Byte, SymExec, Wave
 RECENT = 6                                        # drive events a WAIT considers
 
 
+HIGH = {"P": 0, "P/2": 1, "P/4": 2, "P/8": 3}     # the mode's minimum SCL high time
+
+
+@dataclass
+class I2cMode:
+    name: str
+    defines: Dict[str, int]
+    high: str                                     # "P" or "P/2" (also P/4, P/8)
+
+    @property
+    def shift(self) -> int:
+        return HIGH[self.high]
+
+
 @dataclass
 class I2cContract:
     path: Path
@@ -61,6 +79,7 @@ class I2cContract:
     d_min: int
     d_max: int
     loop: str
+    modes: List[I2cMode] = field(default_factory=lambda: [I2cMode("standard", {}, "P")])
 
 
 def load_i2c(path) -> I2cContract:
@@ -69,10 +88,19 @@ def load_i2c(path) -> I2cContract:
     if raw.get("kind") != "i2c_master":
         raise ContractError(f"{path}: not an i2c_master contract")
     a = raw["assume"]
-    return I2cContract(path, path.parent / raw["program"], int(a["P"]["min"]), int(a["P"]["max"]),
-                       _pin(a["pins"]["scl"]), _pin(a["pins"]["sda"]), dict(a.get("cfg") or {}),
-                       list(a["bytes"]), int(a["stretch"]["max"]), int(a["slave_delay"]["min"]),
-                       int(a["slave_delay"]["max"]), raw.get("loop", "top"))
+    c = I2cContract(path, path.parent / raw["program"], int(a["P"]["min"]), int(a["P"]["max"]),
+                    _pin(a["pins"]["scl"]), _pin(a["pins"]["sda"]), dict(a.get("cfg") or {}),
+                    list(a["bytes"]), int(a["stretch"]["max"]), int(a["slave_delay"]["min"]),
+                    int(a["slave_delay"]["max"]), raw.get("loop", "top"))
+    if "modes" in raw:
+        c.modes = []
+        for m in raw["modes"]:
+            high = str(m.get("high", "P")).replace(" ", "")
+            if high not in HIGH:
+                raise ContractError(f"{path}: mode {m.get('name')!r}: high must be one of "
+                                    f"{', '.join(HIGH)}, not {high!r}")
+            c.modes.append(I2cMode(str(m["name"]), dict(m.get("defines") or {}), high))
+    return c
 
 
 class _Master:
@@ -155,14 +183,15 @@ class I2cOutcome:
     paths: int
     failed: List[str] = field(default_factory=list)
     model: Optional[dict] = None
+    mode: str = "standard"
 
     def report(self) -> str:
         lo, hi = self.P_range
         if self.proved:
-            return (f"PROVED for P in {lo}..{hi}, all bytes, every ACK/NACK pattern, clock "
-                    f"stretching and slave delays within the contract ({self.paths} paths, "
-                    f"{self.seconds:.1f} s)")
-        lines = [f"COUNTEREXAMPLE ({self.seconds:.1f} s): {self.model}"]
+            return (f"{self.mode} mode: PROVED for P in {lo}..{hi}, all bytes, every ACK/NACK "
+                    f"pattern, clock stretching and slave delays within the contract "
+                    f"({self.paths} paths, {self.seconds:.1f} s)")
+        lines = [f"{self.mode} mode: COUNTEREXAMPLE ({self.seconds:.1f} s): {self.model}"]
         lines += [f"  violated: {f}" for f in self.failed]
         return "\n".join(lines)
 
@@ -175,13 +204,20 @@ def _stable(pad: _Pad, a, b, level) -> z3.BoolRef:
     return z3.And(*conds)
 
 
-def prove_i2c(c: I2cContract, source: Optional[str] = None, P_range=None) -> I2cOutcome:
+def prove_i2c(c: I2cContract, source: Optional[str] = None, P_range=None,
+              mode: Optional[str] = None) -> I2cOutcome:
+    """Prove one mode (by name; the contract's first by default) on the program assembled
+    with that mode's defines."""
     t0 = time.perf_counter()
-    asm = Assembler()
+    md = next((m for m in c.modes if m.name == mode), None) if mode else c.modes[0]
+    if md is None:
+        raise ContractError(f"{c.path}: no mode {mode!r}")
+    asm = Assembler(md.defines)
     words = asm.assemble(source if source is not None else c.program.read_text(), str(c.program))
     loop = asm.labels[c.loop]
     lo, hi = P_range or (c.P_min, c.P_max)
     P = z3.Int("P")
+    high = P / (1 << md.shift)                    # integer division: P >> shift for P > 0
     slave = Slave(c)
     a0 = z3.Int("arrival")
     tx = [Byte(z3.BitVec(n, 8), a0) for n in c.bytes]           # queued together
@@ -222,10 +258,12 @@ def prove_i2c(c: I2cContract, source: Optional[str] = None, P_range=None) -> I2c
             else:
                 nb = m // 9
                 t_s = start.time
+                F = [e.time for e in falls]
                 checks.append(("START: SDA falls while SCL is high",
                                z3.And(scl.level_at(t_s), sda.level_at(t_s - 1),
                                       z3.Not(sda.level_at(t_s)))))
-                F = [e.time for e in falls]
+                checks.append((f"START: SCL stays high at least {md.high} after SDA falls",
+                               F[0] - t_s >= high))
                 pr = []
                 for i, R in enumerate(rels):
                     rise = R.time
@@ -238,7 +276,8 @@ def prove_i2c(c: I2cContract, source: Optional[str] = None, P_range=None) -> I2c
                     checks.append((f"clock {i}: SCL pad rises when released",
                                    z3.And(scl.level_at(pr[i]), z3.Not(scl.level_at(pr[i] - 1)))))
                     if i < m:
-                        checks.append((f"clock {i}: SCL high at least P", F[i + 1] - pr[i] >= P))
+                        checks.append((f"clock {i}: SCL high at least {md.high}",
+                                       F[i + 1] - pr[i] >= high))
                 for k in range(nb):
                     d = tx[k].data
                     for j in range(9):
@@ -282,5 +321,6 @@ def prove_i2c(c: I2cContract, source: Optional[str] = None, P_range=None) -> I2c
                     max_steps=20000).paths(assume, on_path=check)
     secs = time.perf_counter() - t0
     if found:
-        return I2cOutcome(False, secs, (lo, hi), len(paths), found["failed"], found["model"])
-    return I2cOutcome(True, secs, (lo, hi), len(paths))
+        return I2cOutcome(False, secs, (lo, hi), len(paths), found["failed"], found["model"],
+                          md.name)
+    return I2cOutcome(True, secs, (lo, hi), len(paths), mode=md.name)

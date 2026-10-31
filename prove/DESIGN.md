@@ -13,13 +13,13 @@ A contract is a YAML file beside its program (`fw/uart_tx.contract.yaml`). It ha
 program: uart_tx.s
 assume:
   P: {min: 8, max: 65535}           # symbolic bit period B, loaded by the host
-  initial: {B0: 0}                  # external level of undriven pins
+  initial: {B1: 0}                  # external level of undriven pins
   tx_fifo:                          # symbolic bytes, symbolic arrival cycles
     - {data: d0, at: a0}            # a0 >= 0
     - {data: d1, at: a1}            # a1 >= a0; covers back-to-back and after-idle frames
 guarantee:
   never: [LATE, UNF, OVF, HALT]     # LATE is a hard error in every contract
-  pin: B0
+  pin: B1
   frames:                           # one frame per byte; levels hold over [start, end)
     - repeat: {for: [d0, d1], as: d}
       start: {not_before: prev_end,  # never overlaps the previous stop bit
@@ -28,7 +28,7 @@ guarantee:
         - {from: 0,     to: P,      level: 0}
         - {from: "k*P", to: "(k+1)*P", level: "d[k-1]", k: "1..8"}
         - {from: "9*P", to: "10*P", level: 1}
-  between_frames: {level: 1}        # line idles high; no other edges on B0
+  between_frames: {level: 1}        # line idles high; no other edges on B1
 bounds:
   frames: 2                         # symbolic executor explores this many bytes
 ```

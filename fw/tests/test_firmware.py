@@ -1,19 +1,27 @@
 """Firmware on the ISS against Python models of the peer devices."""
 
 import random
+from pathlib import Path
 
 import pytest
 
 import fw
-from fw.peers import I2cSlave, SpiSlave, i2c_timing, uart_decode, uart_stimulus
+from asm import assemble
+from fw.peers import (I2cMaster, I2cSlave, OpenDrainBus, SpiSlave, i2c_conditions, i2c_timing,
+                      uart_decode, uart_stimulus)
 from iss import Sim, simulate
 
 UART_B = [16, 50, 434, 5208]            # 3.125 Mbaud, 1 Mbaud, 115200, 9600 at 50 MHz
+# Default pins: Tiny Tapeout's recommended Pmod pinout, top row (uio[0..3] = B0-B3); the
+# bottom-row builds (ROW = 1) use B4-B7.
+TX = 1          # B1, UART TXD
 
 
 def test_word_counts_fit_the_program_memory():
-    sizes = {n: len(fw.load(n)) for n in ("uart_tx", "uart_rx", "spi_master", "i2c_master")}
-    assert sizes == {"uart_tx": 12, "uart_rx": 17, "spi_master": 19, "i2c_master": 32}
+    names = ("uart_tx", "uart_rx", "spi_master", "spi_slave", "i2c_master", "i2c_target")
+    sizes = {n: len(fw.load(n)) for n in names}
+    assert sizes == {"uart_tx": 12, "uart_rx": 17, "spi_master": 19, "spi_slave": 18,
+                     "i2c_master": 32, "i2c_target": 32}
     assert len(fw.load("spi_slave")) == 18
 
 
@@ -24,7 +32,7 @@ def test_uart_tx_received_by_peer(B):
     rng = random.Random(B)
     data = [rng.randrange(256) for _ in range(6)]
     res = simulate(fw.load("uart_tx"), 1 << 40, P=B, host_tx=[(0, b) for b in data])
-    frames = uart_decode(res.pin_trace(0), res.initial[0], B, res.cycles)
+    frames = uart_decode(res.pin_trace(TX), res.initial[TX], B, res.cycles)
     assert [b for _, b, _ in frames] == data
     assert all(ok for _, _, ok in frames)
     starts = [t for t, _, _ in frames]
@@ -34,7 +42,7 @@ def test_uart_tx_received_by_peer(B):
 
 # -- UART RX ------------------------------------------------------------------------------
 
-RX = 8          # M0
+RX = 2          # B2, UART RXD
 
 
 def run_rx(stim, B, cycles=None):
@@ -87,8 +95,59 @@ def test_uart_rx_minimum_bit_period():
     assert res.host_rx[0] != data and not res.ems[0].LATE
 
 
+# -- UART at the common baud rates --------------------------------------------------------
+
+F_CLK = 50_000_000
+COMMON_BAUD = [300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400,
+               460800, 921600, 1_000_000, 2_000_000, 3_000_000]
+
+
+def baud_setup(baud):
+    """(SLOW, P, relative error of the bit period) for a baud rate at 50 MHz. One ADDT P
+    step per bit reaches down to 763 baud; below that the SLOW build takes three."""
+    slow = 1 if F_CLK / baud > 0xFFFF else 0
+    k = 3 if slow else 1
+    P = round(F_CLK / baud / k)
+    return slow, P, P * k * baud / F_CLK - 1
+
+
+@pytest.mark.parametrize("baud", COMMON_BAUD)
+def test_uart_at_common_baud_rates(baud):
+    """TX is decoded, and RX is fed, by a peer at the exact nominal rate, so the rounding of
+    P is part of the test. The bit period is within 0.5% of nominal up to 921,600 baud and
+    2% at 3 Mbaud."""
+    slow, P, err = baud_setup(baud)
+    assert abs(err) <= (0.005 if baud <= 921600 else 0.021)
+    period = F_CLK / baud
+    data = [0x00, 0xFF, 0x55, 0xAA, 0x80, 0x01, 0x3C]
+    res = simulate(fw.load("uart_tx", SLOW=slow), 1 << 40, P=P, host_tx=[(0, b) for b in data])
+    frames = uart_decode(res.pin_trace(TX), res.initial[TX], period, res.cycles)
+    assert [b for _, b, _ in frames] == data and all(ok for _, _, ok in frames)
+    assert not res.ems[0].LATE
+    stim = uart_stimulus(RX, data, period, gap=0)
+    res = simulate(fw.load("uart_rx", SLOW=slow), int(stim[-1][0] + 20 * period), P=P,
+                   stimulus=stim)
+    assert res.host_rx[0] == data and res.sync[0] == 0 and not res.ems[0].LATE
+
+
+@pytest.mark.parametrize("err", [-0.03, 0.03])
+def test_uart_rx_slow_build_tolerates_peer_clock_error(err):
+    slow, P, _ = baud_setup(300)
+    data = [0x00, 0xFF, 0x55]
+    stim = uart_stimulus(RX, data, F_CLK / 300 * (1 + err), gap=0)
+    res = simulate(fw.load("uart_rx", SLOW=slow), int(stim[-1][0] + 20 * F_CLK / 300), P=P,
+                   stimulus=stim)
+    assert res.host_rx[0] == data
+
+
+def test_uart_slow_builds_fit():
+    assert len(fw.load("uart_tx", SLOW=1)) == 18 and len(fw.load("uart_rx", SLOW=1)) == 22
+    assert baud_setup(600)[0] == 1 and baud_setup(1200)[0] == 0
+
+
 def test_uart_loopback_tx_to_rx_on_two_ems():
-    """EM0 transmits on B0, EM1 receives; the peer wiring copies B0 onto M0."""
+    """EM0 transmits on the top row's TXD (B1), EM1 receives on the bottom row's RXD (B6);
+    the peer wiring copies one onto the other."""
     B = 100
     data = [0x12, 0x34, 0xAB]
 
@@ -97,47 +156,95 @@ def test_uart_loopback_tx_to_rx_on_two_ems():
     class Loop(Device):
         def attach(self, sim):
             super().attach(sim)
-            self.prev = sim.pad[0]
+            self.prev = sim.pad[TX]
 
         def on_cycle(self, c):
-            v = self.sim.pad[0]
+            v = self.sim.pad[TX]
             if v != self.prev:
-                self.sim.set_external(RX, v, c + 1)
+                self.sim.set_external(6, v, c + 1)
                 self.prev = v
 
-    sim = Sim([fw.load("uart_tx"), fw.load("uart_rx")], P=[B, B], devices=[Loop()],
+    sim = Sim([fw.load("uart_tx"), fw.load("uart_rx", ROW=1)], P=[B, B], devices=[Loop()],
               host_tx=[[(0, b) for b in data], []])
     res = sim.run(40 * B)
     assert res.host_rx[1] == data
 
 
+# -- Pin rows -----------------------------------------------------------------------------
+
+def test_bottom_row_builds():
+    """With ROW = 1 each master or transmitter uses the bottom Pmod row (B4-B7). The SPI
+    slave's and I2C target's bottom-row builds run in the two-EM pairing tests."""
+    data = [0x12, 0x34, 0xAB]
+    res = simulate(fw.load("uart_tx", ROW=1), 1 << 40, P=100, host_tx=[(0, b) for b in data])
+    assert [b for _, b, _ in uart_decode(res.pin_trace(5), res.initial[5], 100,
+                                         res.cycles)] == data
+    res = simulate(fw.load("uart_rx", ROW=1), 6000, P=100,
+                   stimulus=uart_stimulus(6, data, 100))
+    assert res.host_rx[0] == data
+    slave = SpiSlave(7, 5, 6, 4, responses=[0x5A, 0xC3])
+    res = Sim([fw.load("spi_master", ROW=1)], P=[10], devices=[slave],
+              host_tx=[[(0, 0xA5), (0, 0x3C)]]).run(2000)
+    assert slave.received == [0xA5, 0x3C] and res.host_rx[0] == [0x5A, 0xC3]
+    slave = I2cSlave(6, 7, address=0x50)
+    res = Sim([fw.load("i2c_master", ROW=1)], P=[65], cfg=[{"OUT_MSB": 1, "OUT_N": 7}],
+              devices=[slave], host_tx=[[(0, 0xA0), (0, 0x42)]]).run(10_000)
+    assert slave.transactions == [[0xA0, 0x42]]
+
+
+def test_two_protocols_at_once():
+    """EM0 runs the SPI master on the top Pmod row while EM1 runs the I2C master at 400 kHz on
+    the bottom row; both transfers complete, overlapping in time, with no flag raised."""
+    spi = SpiSlave(SCK, MOSI, MISO, CS, responses=[0x11, 0x22, 0x33])
+    i2c = I2cSlave(6, 7, address=0x50)
+    sim = Sim([fw.load("spi_master"), fw.load("i2c_master", FAST=1, ROW=1)], P=[50, 82],
+              cfg=[{}, I2C_CFG], devices=[spi, i2c],
+              host_tx=[[(0, b) for b in (0xA5, 0x3C, 0x0F)], [(0, b) for b in (0xA0, 0x42)]])
+    res = sim.run(10_000)
+    assert spi.received == [0xA5, 0x3C, 0x0F] and res.host_rx[0] == [0x11, 0x22, 0x33]
+    assert i2c.transactions == [[0xA0, 0x42]] and i2c.errors == []
+    spi_edges = [c for c, v in res.pin_trace(SCK)]
+    scl_edges = [c for c, v in res.pin_trace(6)]
+    assert spi_edges[0] < scl_edges[-1] and scl_edges[0] < spi_edges[-1]   # they overlap
+    assert not any(em.LATE or em.OVF or em.UNF for em in res.ems)
+
+
 # -- SPI master ---------------------------------------------------------------------------
 
-SCK, MOSI, MISO, CS = 2, 3, 9, 5
+CS, MOSI, MISO, SCK = 0, 1, 2, 3
 
 
+def spi_master(mode):
+    return fw.load("spi_master", CPOL=mode >> 1, CPHA=mode & 1)
+
+
+@pytest.mark.parametrize("mode", [0, 1, 2, 3])
 @pytest.mark.parametrize("P", [5, 10, 25, 1000])
-def test_spi_master_full_duplex(P):
-    rng = random.Random(P)
+def test_spi_master_full_duplex(mode, P):
+    rng = random.Random(16 * P + mode)
     out = [rng.randrange(256) for _ in range(6)]
     back = [rng.randrange(256) for _ in range(6)]
-    slave = SpiSlave(SCK, MOSI, MISO, CS, responses=list(back))
-    res = Sim([fw.load("spi_master")], P=[P], devices=[slave],
+    slave = SpiSlave(SCK, MOSI, MISO, CS, responses=list(back), mode=mode)
+    res = Sim([spi_master(mode)], P=[P], devices=[slave],
               host_tx=[[(0, b) for b in out]]).run(200 * P + 1000)
     assert slave.received == out
     assert res.host_rx[0] == back
     assert slave.errors == [] and not res.ems[0].LATE
-    # SCK period is exactly 2P within a byte
-    r = slave.rise_times
+    # SCK period is exactly 2P within a byte, and SCK idles at CPOL
+    r = slave.sample_times
     assert all(b - a == 2 * P for a, b in zip(r, r[1:]) if b - a < 4 * P)
+    assert res.pin_trace(SCK)[-1][1] == mode >> 1
 
 
-def test_spi_master_minimum_half_period():
-    """Measured: P = 5 (SCK = 5 MHz at 50 MHz) is the fastest on-time clock; P = 4 is late."""
-    slave = SpiSlave(SCK, MOSI, MISO, CS)
-    res = Sim([fw.load("spi_master")], P=[4], devices=[slave],
-              host_tx=[[(0, 0x5A)]]).run(1000)
-    assert res.ems[0].LATE
+@pytest.mark.parametrize("mode", [0, 1, 2, 3])
+def test_spi_master_minimum_half_period(mode):
+    """Measured: P = 5 (SCK = 5 MHz at 50 MHz) is the fastest on-time clock in every mode;
+    P = 4 is late."""
+    for P, late in ((4, True), (5, False)):
+        slave = SpiSlave(SCK, MOSI, MISO, CS, mode=mode)
+        res = Sim([spi_master(mode)], P=[P], devices=[slave],
+                  host_tx=[[(0, 0x5A), (0, 0xC3)]]).run(1000)
+        assert res.ems[0].LATE == late, (mode, P)
 
 
 def test_spi_master_cs_high_time_between_bytes():
@@ -152,31 +259,44 @@ def test_spi_master_cs_high_time_between_bytes():
 
 # -- I2C master ---------------------------------------------------------------------------
 
-SCL, SDA = 6, 7
+SCL, SDA = 2, 3
 I2C_CFG = {"OUT_MSB": 1, "OUT_N": 7}
 
 
-def run_i2c(data, P, slave, cycles=None, arrivals=None):
+def run_i2c(data, P, slave, cycles=None, arrivals=None, fast=0):
     arrivals = arrivals or [0] * len(data)
-    sim = Sim([fw.load("i2c_master")], P=[P], cfg=[I2C_CFG], devices=[slave],
+    sim = Sim([fw.load("i2c_master", FAST=fast)], P=[P], cfg=[I2C_CFG], devices=[slave],
               host_tx=[list(zip(arrivals, data))])
     return sim.run(cycles or (len(data) + 2) * 25 * P + 1000)
 
 
-@pytest.mark.parametrize("P", [65, 250])      # ~385 kHz and 100 kHz at 50 MHz
-def test_i2c_write_transaction(P):
+# (FAST, P, SCL period in cycles at 50 MHz, I2C minimum tLOW and tHIGH in cycles)
+I2C_SPEEDS = [
+    (0, 249, 500, 235, 200),     # standard mode, 100.0 kHz: tLOW 4.7 us, tHIGH 4.0 us
+    (1, 82, 125, 65, 30),        # fast mode, 400.0 kHz: tLOW 1.3 us, tHIGH 0.6 us
+    (1, 65, 99, 65, 30),         # fast mode's shortest legal tLOW (faster than 400 kHz)
+    (0, 65, 132, 65, 30),        # equal halves at the same P: 378.8 kHz
+]
+
+
+@pytest.mark.parametrize("fast,P,period,t_low,t_high", I2C_SPEEDS)
+def test_i2c_write_transaction(fast, P, period, t_low, t_high):
     slave = I2cSlave(SCL, SDA, address=0x50)
     data = [0x50 << 1, 0x12, 0xA5, 0x00]
-    res = run_i2c(data, P, slave)
+    res = run_i2c(data, P, slave, fast=fast)
     assert slave.transactions == [data]
     assert [e for _, e in slave.events] == ["START", "ACK", "ACK", "ACK", "ACK", "STOP"]
     assert slave.errors == [] and res.sync[1] == 0 and not res.ems[0].LATE
     t = i2c_timing(res.trace, SCL, SDA)
-    assert t["low"] >= P and t["high"] >= P and t["start_hold"] >= P and t["stop_setup"] >= P
-    # Against the I2C minimums at 50 MHz (20 ns/cycle): fast mode needs tLOW 1.3 us,
-    # tHIGH 0.6 us; standard mode tLOW 4.7 us, tHIGH 4.0 us.
-    lo, hi = (65, 30) if P < 250 else (235, 200)
-    assert t["low"] >= lo and t["high"] >= hi
+    high = P >> fast
+    assert t["low"] >= P and t["high"] >= high and t["start_hold"] >= high
+    assert t["stop_setup"] >= P
+    assert t["period"] == period                 # every clock, ACK clocks included
+    assert t["low"] >= t_low and t["high"] >= t_high
+
+
+def test_i2c_fast_build_is_the_same_size():
+    assert len(fw.load("i2c_master", FAST=1)) == len(fw.load("i2c_master")) == 32
 
 
 def test_i2c_nack_on_address_stops_and_flags():
@@ -215,59 +335,226 @@ def test_i2c_two_transactions_keep_bus_free_time():
     assert t["bus_free"] >= P
 
 
+# -- I2C target ---------------------------------------------------------------------------
+
+T_SCL, T_SDA = 2, 3      # the target alone, top row; paired with the master, bottom row
+ACK, NACK = 0x00, 0xFF
+TARGET_SRC = (Path(fw.__file__).parent / "i2c_target.s").read_text()
+# Bytes whose bit 7 differs from bit 6, so SDA changes right after the first clock of a byte
+# in both directions: the case the STOP and repeated-START watch must not mistake.
+TARGET_DATA = [[0xA0, 0x40, 0xBF, 0x7F, 0x80], [0xA2, 0x01, 0xFE]]
+
+
+def run_target(transactions, low, high, answers=None, hold=8, repeated=False, words=None):
+    m = I2cMaster(T_SCL, T_SDA, transactions, low, high, hold=hold, repeated=repeated)
+    n = sum(len(t) for t in transactions)
+    answers = [(0, ACK)] * n if answers is None else answers
+    sim = Sim([words or fw.load("i2c_target")], devices=[m], host_tx=[answers])
+    return m, sim.run(200_000)
+
+
+def target_ok(m, res, transactions, conditions):
+    flat = [b for t in transactions for b in t]
+    return (m.done is not None and m.acks == [[0] * len(t) for t in transactions]
+            and res.host_rx[0] == flat and i2c_conditions(res.trace, T_SCL, T_SDA) == conditions
+            and not res.ems[0].LATE and not res.ems[0].OVF)
+
+
+@pytest.mark.parametrize("low,high", [(65, 30), (235, 200)])    # fast, standard mode minimums
+def test_i2c_target_receives_writes(low, high):
+    m, res = run_target(TARGET_DATA, low, high)
+    assert target_ok(m, res, TARGET_DATA, ["START", "STOP", "START", "STOP"])
+    assert res.sync[2] == 1 and res.sync[3] == 1           # START and STOP seen
+    t = i2c_timing(res.trace, T_SCL, T_SDA)
+    assert t["low"] >= low and t["high"] >= high             # the target shortens nothing
+
+
+def test_i2c_target_host_nacks_an_address_and_a_data_byte():
+    data = [[0xA4, 0x11], [0xA0, 0x22, 0x33, 0x44]]
+    m, res = run_target(data, 65, 30, [(0, NACK), (0, ACK), (0, ACK), (0, NACK)])
+    assert m.acks == [[1], [0, 0, 1]]                       # the master stops at each NACK
+    assert res.host_rx[0] == [0xA4, 0xA0, 0x22, 0x33]
+    assert i2c_conditions(res.trace, T_SCL, T_SDA) == ["START", "STOP", "START", "STOP"]
+
+
+def test_i2c_target_repeated_start():
+    data = [[0xA0, 0x10], [0xA0, 0x20], [0xA2, 0x30]]
+    m, res = run_target(data, 65, 30, repeated=True)
+    assert target_ok(m, res, data, ["START", "START", "START", "STOP"])
+
+
+def test_i2c_target_stretches_scl_until_the_host_answers():
+    m, res = run_target([[0xA0, 0x5A]], 65, 30, [(5000, ACK), (12000, ACK)])
+    assert m.acks == [[0, 0]] and res.host_rx[0] == [0xA0, 0x5A]
+    rises = [c for c, v in res.pin_trace(T_SCL) if v == 1]
+    # SCL rises once per answer, 16 cycles after the ACK is on SDA, and not before.
+    assert [c for c in rises if 5000 <= c < 5040] and not [c for c in rises if 1500 < c < 5000]
+    assert [c for c in rises if 12000 <= c < 12040]
+    assert i2c_timing(res.trace, T_SCL, T_SDA)["data_setup"] >= 16
+
+
+@pytest.mark.parametrize("hold", [0, 1, 2, 8, 30])
+def test_i2c_target_with_any_data_hold_time(hold):
+    m, res = run_target(TARGET_DATA, 65, 30, hold=hold)
+    assert target_ok(m, res, TARGET_DATA, ["START", "STOP", "START", "STOP"])
+
+
+def test_i2c_target_limits():
+    """Measured: SCL high of 4 cycles and low of 11 work, with no data hold time; high of 3
+    loses bits, and with low of 10 the target releases SDA after SCL has risen again, a
+    false STOP on the bus."""
+    stops = ["START", "STOP", "START", "STOP"]
+    assert target_ok(*run_target(TARGET_DATA, 11, 4, hold=0), TARGET_DATA, stops)
+    assert not target_ok(*run_target(TARGET_DATA, 65, 3), TARGET_DATA, stops)
+    m, res = run_target(TARGET_DATA, 10, 30)
+    assert i2c_conditions(res.trace, T_SCL, T_SDA) != stops
+
+
+@pytest.mark.parametrize("fast,P,period", [(0, 249, 500), (1, 82, 125)])  # 100 and 400 kHz
+def test_i2c_master_and_target_on_two_ems(fast, P, period):
+    """EM0 runs i2c_master, EM1 runs i2c_target; the board joins their pins as two open-drain
+    lines. EM1's host ACKs the address and the first data byte and NACKs the second."""
+    data = [0xA0, 0x12, 0xA5]
+    bus = OpenDrainBus([[SCL, 6], [SDA, 7]])
+    sim = Sim([fw.load("i2c_master", FAST=fast), fw.load("i2c_target", ROW=1)], P=[P, 0],
+              cfg=[I2C_CFG, {}], devices=[bus],
+              host_tx=[[(0, b) for b in data], [(0, ACK), (0, ACK), (0, NACK)]])
+    res = sim.run(40 * period)
+    assert res.host_rx[1] == data
+    assert res.sync[1] == 1                                 # the master saw the NACK
+    assert res.sync[2] == 1 and res.sync[3] == 1            # the target saw START and STOP
+    assert not res.ems[0].LATE and not res.ems[1].LATE
+    assert i2c_conditions(res.trace, SCL, SDA) == ["START", "STOP"]
+    assert i2c_timing(res.trace, SCL, SDA)["period"] == period
+
+
+# Planted bugs: each must fail at least one of the scenarios above.
+TARGET_BUGS = {
+    # The recheck of SCL after an SDA change, replaced by an instruction with no effect here.
+    "no_recheck_after_sda_rise": ("        JMP   LOW sda, b7lo\n        JMP   LOW scl, rest      ;",
+                                  "        JMP   LOW sda, b7lo\n        SYNC  set, 3             ;"),
+    "no_recheck_after_sda_fall": ("        JMP   HIGH sda, b7hi\n        JMP   LOW scl, rest\n",
+                                  "        JMP   HIGH sda, b7hi\n        SYNC  set, 2\n"),
+    "no_stop_flag": ("        SYNC  set, 3", "        SYNC  set, 0"),
+    "lsb_first": ("SHIFT in, msb, 8", "SHIFT in, lsb, 8"),
+    "nine_bits": ("SET   X, 6", "SET   X, 7"),
+    "no_ack_setup_time": ("OUT   scl, 1 @T+16", "OUT   scl, 1 @T+0 "),
+    "sda_held_into_next_bit": ("OUT   sda, 1 @T+8", "OUT   sda, 1 @T+40"),
+    "no_stretch": ("OUT   scl, 0 @T+2", "OUT   scl, 1 @T+2"),
+    "start_on_any_sda_fall": ("JMP   LOW scl, idle", "JMP   LOW scl, start"),
+}
+
+
+def target_scenarios(words):
+    stops = ["START", "STOP", "START", "STOP"]
+    failed = []
+    for name, args, kw, cond in [
+        ("fast", (TARGET_DATA, 65, 30), {}, stops),
+        ("standard", (TARGET_DATA, 235, 200), {}, stops),
+        ("hold 0", (TARGET_DATA, 65, 30), {"hold": 0}, stops),
+        ("limits", (TARGET_DATA, 11, 4), {"hold": 0}, stops),
+        ("repeated", ([[0xA0, 0x10], [0xA0, 0x20]], 65, 30), {"repeated": True},
+         ["START", "START", "STOP"]),
+    ]:
+        m, res = run_target(*args, words=words, **kw)
+        if not target_ok(m, res, args[0], cond) or (name == "fast" and not res.sync[3]):
+            failed.append(name)
+    m, res = run_target([[0xA0, 0x5A]], 65, 30, [(5000, ACK), (12000, ACK)], words=words)
+    t = i2c_timing(res.trace, T_SCL, T_SDA)
+    if m.acks != [[0, 0]] or (t["data_setup"] or 0) < 16 or 1500 < min(
+            [c for c, v in res.pin_trace(T_SCL) if v == 1 and c > 1500] or [0]) < 5000:
+        failed.append("stretch")
+    # Joining mid-transaction: ten data clocks, SDA changing while SCL is low, before the
+    # first START. Only the START may begin a byte.
+    noise = []
+    for k in range(10):
+        t = 20 + 60 * k
+        noise += [(t, T_SCL, 0), (t + 10, T_SDA, k & 1), (t + 30, T_SCL, 1)]
+    m = I2cMaster(T_SCL, T_SDA, [[0xA0, 0x01]], 65, 30, start=1000)
+    res = Sim([words], devices=[m], stimulus=noise, host_tx=[[(0, ACK)] * 4]).run(50_000)
+    if res.host_rx[0] != [0xA0, 0x01]:
+        failed.append("joining")
+    return failed
+
+
+def test_i2c_target_scenarios_pass_on_the_program():
+    assert target_scenarios(fw.load("i2c_target")) == []
+
+
+@pytest.mark.parametrize("bug", sorted(TARGET_BUGS))
+def test_i2c_target_scenarios_catch_planted_bugs(bug):
+    old, new = TARGET_BUGS[bug]
+    assert TARGET_SRC.count(old) == 1, bug
+    failed = target_scenarios(assemble(TARGET_SRC.replace(old, new), bug))
+    assert failed, f"{bug} is not caught"
+
+
 # -- SPI slave ----------------------------------------------------------------------------
 
 from fw.peers import Wire, spi_master_stimulus  # noqa: E402
 
-S_SCK, S_MOSI, S_CS, S_MISO = 8, 10, 11, 4
+S_SCK, S_MOSI, S_CS, S_MISO = 3, 1, 0, 2    # the slave alone, top row
 
 
-def run_spi_slave(out, replies, half, setup):
-    stim, rises = spi_master_stimulus(S_SCK, S_MOSI, S_CS, out, half, setup)
-    sim = Sim([fw.load("spi_slave")], stimulus=stim, initial={S_CS: 1, S_SCK: 0, S_MOSI: 1},
+def spi_slave(mode, row=0):
+    return fw.load("spi_slave", CPOL=mode >> 1, CPHA=mode & 1, ROW=row)
+
+
+def run_spi_slave(out, replies, half, setup, mode=0):
+    stim, samples = spi_master_stimulus(S_SCK, S_MOSI, S_CS, out, half, setup, mode=mode)
+    sim = Sim([spi_slave(mode)], stimulus=stim,
+              initial={S_CS: 1, S_SCK: mode >> 1, S_MOSI: 1},
               host_tx=[[(0, b) for b in replies]])
     res = sim.run(max(c for c, _, _ in stim) + 200)
-    got = [sum(res.level_at(S_MISO, t) << (7 - k) for k, t in enumerate(r)) for r in rises]
+    got = [sum(res.level_at(S_MISO, t) << (7 - k) for k, t in enumerate(r)) for r in samples]
     return sim, res, got
 
 
+@pytest.mark.parametrize("mode", [0, 1, 2, 3])
 @pytest.mark.parametrize("half,setup", [(4, 5), (8, 8), (40, 40), (1000, 1000)])
-def test_spi_slave_against_master_model(half, setup):
-    rng = random.Random(half)
+def test_spi_slave_against_master_model(mode, half, setup):
+    rng = random.Random(4 * half + mode)
     out = [rng.randrange(256) for _ in range(5)]
     replies = [rng.randrange(256) for _ in range(5)]
-    sim, res, got = run_spi_slave(out, replies, half, setup)
+    sim, res, got = run_spi_slave(out, replies, half, setup, mode)
     assert res.host_rx[0] == out
     assert got == replies
     assert not res.ems[0].LATE and not res.ems[0].OVF
     assert sim.oe[S_MISO] == 0                  # MISO released after the last byte
 
 
-def test_spi_slave_limits():
-    """Measured: 4 cycles from CS to the first rise is too short for MISO bit 7, SCK phases
-    of 3 cycles corrupt MISO, and phases of 2 cycles lose MOSI bits."""
+@pytest.mark.parametrize("mode", [0, 1, 2, 3])
+def test_spi_slave_limits(mode):
+    """Measured: SCK phases of 3 cycles corrupt MISO and phases of 2 cycles lose MOSI bits,
+    in every mode. From CS to the first leading edge, CPHA = 0 needs 5 cycles (with 4, MISO
+    bit 7 is late) and CPHA = 1 needs 3 (with 2, the slave misses the first edge)."""
     out, replies = [0xA5, 0x3C], [0x5A, 0xC3]
-    assert run_spi_slave(out, replies, 4, 4)[2] != replies
-    assert run_spi_slave(out, replies, 3, 5)[2] != replies
-    assert run_spi_slave(out, replies, 3, 5)[1].host_rx[0] == out
-    assert run_spi_slave(out, replies, 2, 5)[1].host_rx[0] != out
+    setup = 3 if mode & 1 else 5
+    assert run_spi_slave(out, replies, 4, setup, mode)[2] == replies
+    assert run_spi_slave(out, replies, 4, setup - 1, mode)[2] != replies
+    assert run_spi_slave(out, replies, 3, 5, mode)[2] != replies
+    assert run_spi_slave(out, replies, 3, 5, mode)[1].host_rx[0] == out
+    assert run_spi_slave(out, replies, 2, 5, mode)[1].host_rx[0] != out
 
 
-def test_spi_master_and_slave_on_two_ems():
-    """EM0 runs spi_master, EM1 runs spi_slave; the board wires them together."""
-    P = 9                                      # the smallest P this pairing supports
+@pytest.mark.parametrize("mode", [0, 1, 2, 3])
+def test_spi_master_and_slave_on_two_ems(mode):
+    """EM0 runs spi_master, EM1 runs spi_slave, in the same mode; the board wires them
+    together: the master on the top row (B0-B3), the slave on the bottom row (B4-B7)."""
+    P = 8 if mode & 1 else 9                   # the smallest P this pairing supports
     out = [0x12, 0xFE, 0x81]
     replies = [0xC0, 0x0F, 0x55]
-    wires = Wire([(SCK, S_SCK), (MOSI, S_MOSI), (CS, S_CS), (S_MISO, MISO)])
-    sim = Sim([fw.load("spi_master"), fw.load("spi_slave")], P=[P, 0], devices=[wires],
-              host_tx=[[(100, b) for b in out], [(0, b) for b in replies]])
-    res = sim.run(3000)
+
+    def run(p):
+        wires = Wire([(SCK, 7), (MOSI, 5), (CS, 4), (6, MISO)])
+        sim = Sim([spi_master(mode), spi_slave(mode, row=1)], P=[p, 0], devices=[wires],
+                  host_tx=[[(100, b) for b in out], [(0, b) for b in replies]])
+        return sim.run(3000)
+
+    res = run(P)
     assert res.host_rx[0] == replies           # master received the slave's replies
     assert res.host_rx[1] == out               # slave received the master's bytes
     assert not res.ems[0].LATE and not res.ems[1].LATE
     # One cycle less and the master misreads MISO, with no flag raised.
-    sim = Sim([fw.load("spi_master"), fw.load("spi_slave")], P=[P - 1, 0],
-              devices=[Wire([(SCK, S_SCK), (MOSI, S_MOSI), (CS, S_CS), (S_MISO, MISO)])],
-              host_tx=[[(100, b) for b in out], [(0, b) for b in replies]])
-    res = sim.run(3000)
+    res = run(P - 1)
     assert res.host_rx[0] != replies and not res.ems[0].LATE

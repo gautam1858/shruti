@@ -1,4 +1,4 @@
-"""Command line: python -m asm prog.s [-o prog.hex]  |  python -m asm -d prog.hex"""
+"""Command line: python -m asm prog.s [-o prog.hex] [-D NAME=VALUE ...]  |  python -m asm -d prog.hex"""
 
 import argparse
 import sys
@@ -11,6 +11,8 @@ def main(argv=None) -> int:
     ap.add_argument("file")
     ap.add_argument("-o", "--output", help="write hex words here (default: stdout)")
     ap.add_argument("-d", "--disassemble", action="store_true", help="input is hex words")
+    ap.add_argument("-D", dest="defines", action="append", default=[], metavar="NAME=VALUE",
+                    help="override an .equ, e.g. -D CPOL=1 (repeatable)")
     a = ap.parse_args(argv)
     text = open(a.file).read()
     if a.disassemble:
@@ -18,7 +20,11 @@ def main(argv=None) -> int:
         out = disassemble(words)
     else:
         try:
-            words = assemble(text, a.file)
+            defs = {}
+            for d in a.defines:
+                name, _, value = d.partition("=")
+                defs[name] = int(value, 0)
+            words = assemble(text, a.file, defs)
         except AsmError as e:
             print(e, file=sys.stderr)
             return 1

@@ -18,16 +18,16 @@ smallest P for which the contract holds: 3
 
 - **Counterexamples:** the prover re-runs every counterexample on the concrete ISS and prints the ISS's own pin trace, the violated obligation and the first mismatching cycle. A counterexample never depends on trusting the symbolic executor.
 - **Obligations:** every contract requires LATE never set, and the executor also checks that T stays within 2^23 cycles of the counter, so unbounded time arithmetic matches the 24-bit hardware.
-- **Receivers and SPI:** `fw/uart_rx.contract.yaml` (kind `receiver`) proves the UART receiver against a symbolic 8N1 peer with edge jitter up to P/16, for P = 16..65,535, in about 0.4 s; it also holds from P = 9, and fails at P = 8, matching the ISS limit. `fw/spi_master.contract.yaml` (kind `spi_master`) proves the SPI master's timing and data in both directions against a slave that answers 1 or 2 cycles after each edge, for P = 5..65,535, in about 8 s. MISO samples are left symbolic during execution and tied to a slave model built from the program's own CS and SCK events.
+- **Receivers and SPI:** `fw/uart_rx.contract.yaml` (kind `receiver`) proves the UART receiver against a symbolic 8N1 peer with edge jitter up to P/16, for P = 16..65,535, in about 0.4 s; it also holds from P = 9, and fails at P = 8, matching the ISS limit. `fw/spi_master.contract.yaml` (kind `spi_master`) proves the SPI master's timing and data in both directions against a slave that answers 1 or 2 cycles after each edge, for P = 5..65,535, in each of SPI modes 0-3 (the contract lists the modes; each is proved on the program assembled with its CPOL and CPHA), in 4 to 12 s per mode. MISO samples are left symbolic during execution and tied to a slave model built from the program's own CS and SCK events.
 - **Inputs and branches:** the executor forks on branches that depend on symbolic inputs (WAIT, JMP on a pin), keeps only paths whose condition is satisfiable, and can take input waveforms with symbolic edge times and levels. `run()` handles single-path programs; `paths()` returns every feasible path.
 - **Trust:** `prove/tests` checks the symbolic executor against the ISS on the UART program and five broken variants with random concrete values.
 
-- **I2C master:** `fw/i2c_master.contract.yaml` (kind `i2c_master`) proves one write transaction, START to STOP, against a symbolic slave. The slave ACKs or NACKs each byte, may stretch the clock after every ACK, and answers 1 or 2 cycles after each edge. It covers P = 65..2,000 and runs in about 25 s.
+- **I2C master:** `fw/i2c_master.contract.yaml` (kind `i2c_master`) proves one write transaction, START to STOP, against a symbolic slave. The slave ACKs or NACKs each byte, may stretch the clock after every ACK, and answers 1 or 2 cycles after each edge. It covers P = 65..2,000 for each speed grade the contract lists: SCL high (and the START hold) at least P in the standard build and at least P/2 in the fast build (`FAST = 1`), each in about 30 s.
   - Both lines are open-drain. Each pad is the wired-AND of the program's own drives and the slave, and is rebuilt from the program's events whenever the program reads the line.
   - A WAIT considers only the 6 most recent drive edges, and proves as an obligation that every older edge was already visible when the WAIT began.
   - What is proved: the START; SCL low and high phases of at least P, stretching included; SDA stable and correct while SCL is high; the ACK/NACK handling; the STOP; and the NACK flag.
   - Not yet proved: the bus-free time between two transactions (the ISS tests measure it).
 
-Still to come: the SPI slave, and the I2C bus-free time across transactions.
+Still to come: the SPI slave, the I2C target, and the I2C bus-free time across transactions.
 
 Tests: `python -m pytest prove`.

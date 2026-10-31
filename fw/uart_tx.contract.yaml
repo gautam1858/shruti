@@ -2,13 +2,13 @@
 program: uart_tx.s
 assume:
   P: {min: 8, max: 65535}          # bit period B in cycles, written by the host
-  initial: {B0: 0}                 # external level of the TX pin before the program drives it
+  initial: {B1: 0}                 # external level of the TX pin before the program drives it
   tx_fifo:                         # two symbolic bytes with symbolic arrival cycles
     - {data: d0, at: a0}           # (0 <= a0 <= a1): covers back-to-back and after-idle frames
     - {data: d1, at: a1}
 guarantee:
   never: [LATE, UNF, HALT]
-  pin: B0
+  pin: B1
   idle: {level: 1, from: 1}        # high from cycle 1 on, except inside frames
   frames:
     for_each: tx_fifo

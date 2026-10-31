@@ -192,3 +192,47 @@ def test_cli_assemble_and_disassemble(tmp_path):
     out = tmp_path / "p.dis"
     assert main(["-d", str(hexf), "-o", str(out)]) == 0
     assert "JMP L0" in out.read_text()
+
+
+# -- conditional assembly and defines -------------------------------------------------
+
+COND = """
+.equ CPOL 0
+.if CPOL
+.define LEAD fall
+.else
+.define LEAD rise
+.endif
+.if !CPOL
+        SET B0, 0
+.else
+        SET B0, 1
+.endif
+        WAIT M0, LEAD
+"""
+
+
+def test_conditional_assembly_follows_the_equ():
+    assert assemble(COND) == assemble("SET B0, 0\nWAIT M0, rise")
+
+
+def test_a_define_overrides_the_equ():
+    assert assemble(COND, defines={"CPOL": 1}) == assemble("SET B0, 1\nWAIT M0, fall")
+
+
+def test_an_unknown_define_is_an_error():
+    with pytest.raises(AsmError, match="no '.equ CPHA'"):
+        assemble(COND, defines={"CPHA": 1})
+
+
+def test_conditionals_nest_and_must_balance():
+    src = ".equ A 1\n.equ B 0\n.if A\n.if B\nSET X, 1\n.else\nSET X, 2\n.endif\n.else\nSET X, 3\n.endif"
+    assert assemble(src) == assemble("SET X, 2")
+    for bad in (".if 1\nHALT", ".endif", ".else"):
+        with pytest.raises(AsmError):
+            assemble(bad)
+
+
+def test_a_define_replaces_whole_tokens_only():
+    src = ".define LEAD rise\nLEADX: WAIT M0, LEAD\nJMP LEADX"
+    assert assemble(src) == assemble("L: WAIT M0, rise\nJMP L")
