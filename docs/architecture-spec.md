@@ -280,7 +280,7 @@ One five-minute video, recorded on the FPGA prototype in December and re-shot on
 7. Ethernet: the switch link LED comes on, then tcpdump shows the frame.
 8. Thirty seconds of fuzzing: mutated frames against the device, response latencies read at 20 ns.
 
-Deliverables in the submission: the video, the README pitch, this spec, and a verification report whose centre is a bugs-found-per-method table, including where the LLM red team failed. As the organisers ask (9 Oct 2026), the write-up also describes how AI tools were used in the design and verification. Their checklist: a public repository with the RTL, tests and a passing GDS and precheck from the Tiny Tapeout flow; architecture and instruction-set documentation; the assembler with example programs; and a write-up of the verification approach.
+Deliverables in the submission: the video, the README pitch, this spec, and a verification report whose centre is a bugs-found-per-method table, including where the LLM red team failed. Their checklist: a public repository with the RTL, tests and a passing GDS and precheck from the Tiny Tapeout flow; architecture and instruction-set documentation; the assembler with example programs; and a write-up of the verification approach.
 
 ## Risks and cut list
 
