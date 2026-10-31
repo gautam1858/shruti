@@ -36,7 +36,7 @@ Four host-configured rule monitors match an edge, a guard over the pin snapshot 
 
 ## Proof-carrying firmware
 
-Every protocol program is meant to ship with a machine-checked proof that it meets its contract; today UART transmit and receive, SPI master and I2C master do, and the SPI slave is tested but not yet proved. `shruti prove` symbolically executes the ISS over the program with the data bytes and the bit period left symbolic and hands the arithmetic to Z3; a proof or a counterexample trace comes back in seconds, and `shruti load` will refuse an unproven program (planned; the CLI has `prove` and `train` today). The RTL is tied to the ISS by cycle-exact differential testing and by 27 SymbiYosys properties of the Event Machine; a bounded formal equivalence check against a transliteration of the ISS is planned. The aim is that an LLM writes the firmware for a new protocol and nobody has to read it, because the prover accepts or rejects it; that demo is planned for 20 Dec. Nobody proves PIO programs; Shruti's are small enough to prove.
+Every protocol program is meant to ship with a machine-checked proof that it meets its contract; today UART transmit and receive, SPI master and I2C master do, and the SPI slave is tested but not yet proved. `shruti prove` symbolically executes the ISS over the program with the data bytes and the bit period left symbolic and hands the arithmetic to Z3; a proof or a counterexample trace comes back in seconds, and `shruti load` will refuse an unproven program (planned; the CLI has `prove` and `train` today). The RTL is tied to the ISS by cycle-exact differential testing and by 27 SymbiYosys properties of the Event Machine; a bounded formal equivalence check against a transliteration of the ISS is planned. The aim is that firmware for a protocol the chip was not designed for can be loaded without anyone reviewing it, because the prover accepts or rejects it; that demo (PS/2) is planned for 20 Dec. Nobody proves PIO programs; Shruti's are small enough to prove.
 
 ## Stretch: 10 Mbit Ethernet
 
@@ -57,7 +57,7 @@ The distinctive claim, planned for 13 Dec, is a formal proof in SymbiYosys that 
 - mutation tests of the RTL test suite and of the formal properties, counted apart from real bugs (`docs/verification-log.md`);
 - gate-level simulation of the routed netlist, and a signoff gate on post-route timing, DRC and antenna metrics.
 
-Planned: protocol-level cocotb bus models with mutation tests, formal properties for edge capture (no edge lost while an EM waits) and the flight recorder, an LLM red team whose bug yield is measured and reported per method, and an FPGA prototype (Tang Nano 20K) run against a USB-UART adapter, an SPI flash and an I2C sensor.
+Planned: protocol-level cocotb bus models with mutation tests, formal properties for edge capture (no edge lost while an EM waits) and the flight recorder, and an FPGA prototype (Tang Nano 20K) run against a USB-UART adapter, an SPI flash and an I2C sensor.
 
 ## Status
 
@@ -85,8 +85,7 @@ Dates from the spec's milestones:
 - FPGA bring-up on a Tang Nano 20K against a USB-UART adapter, an SPI flash and an I2C sensor: 6 Dec 2026.
 - The classifier proof; formal properties for edge capture and the recorder; a bounded equivalence check of the Event Machine against an ISS transliteration: 13 Dec 2026.
 - A prescaler for the Ear's timebase so slow buses get answers, and better training for fast UARTs: before the feature freeze, 20 Dec 2026.
-- `shruti teach` and `shruti load` (which refuses unproven programs), a proof for the SPI slave, and the "LLM writes PS/2 firmware, the prover accepts it" demo: 20 Dec 2026; demos count only if passing by then.
-- The measured LLM red team (mutations and candidate properties proposed from the ISA, bug yield reported per method): in the verification report, 12 Jan 2027.
+- `shruti teach` and `shruti load` (which refuses unproven programs), a proof for the SPI slave, and the PS/2 demo (firmware for a protocol the chip was not designed for, accepted by the prover with no code review): 20 Dec 2026; demos count only if passing by then.
 - The organisers' standard settings: SPI modes 0-3 for the SPI master and slave (both are mode 0 today), I2C at 100 and 400 kHz (the master's equal half-periods cap fast mode at about 385 kHz today) and an I2C target: before the feature freeze, 20 Dec 2026.
 - Low-speed USB and the Ethernet stretch: only if passing by 20 Dec 2026.
 

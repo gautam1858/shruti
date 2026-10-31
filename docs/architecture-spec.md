@@ -211,7 +211,7 @@ If the 8x4 grant arrives: add a third EM (2,400 cells) or double program memory 
 
 ## Verification methodology
 
-The distinctive claim is a bit-exact formal proof that the on-die classifier computes what the trained model computes, for every weight set, on top of a conventional golden-model, formal and protocol-level stack; every method's bug count is reported in the write-up, including the AI-assisted one.
+The distinctive claim is a bit-exact formal proof that the on-die classifier computes what the trained model computes, for every weight set, on top of a conventional golden-model, formal and protocol-level stack; every method's bug count is reported in the write-up.
 
 1. Golden models first. A cycle-accurate Python ISS for the EMs, with assembler and disassembler round-trip tests, is written before any RTL and is what the firmware library is developed on. The feature extractor and classifier have one bit-exact fixed-point reference shared with the training pipeline's export step.
 2. Differential testing. Constrained-random EM programs (valid targets, reachable waits) run on the RTL in cocotb and on the ISS with the same random pin stimulus; pin drives, T values and FIFO contents must match cycle-exactly. Random edge streams do the same for the feature extractor.
@@ -219,8 +219,7 @@ The distinctive claim is a bit-exact formal proof that the on-die classifier com
 4. Formal, with SymbiYosys. Scheduler: an armed slot fires at exactly its compare time, never earlier, never twice. Capture: no edge on a filtered pin is lost while an EM waits on it. FIFOs: no silent overflow or underflow. Recorder: after a trigger, exactly N more entries, then frozen. PC always in range; illegal opcode halts.
 5. Formal, the classifier. A k-induction invariant over the MAC cycle counter shows each accumulator equals the running dot product of features and ternary weights as specified, for all weights and features; the argmax and threshold logic is proven equivalent to the reference by SAT. The datapath is small enough that this closes; each new weight set then needs only the differential run.
 6. ML validation. Held-out captures from the FPGA, at least five devices per class across speeds, give a confusion matrix. OOD is tested by training without JTAG and PS/2 and reporting the flag rate on them against the false-alarm rate on known classes. Glitch and speed-extreme robustness are reported too.
-7. AI-assisted, measured. An LLM red team proposes mutation scenarios and candidate formal properties from the ISA spec; every property is human-reviewed before it counts. The same harness validates LLM-written firmware for a protocol it was not shown, which is the second demo. The report carries a bugs-found-per-method table.
-8. Physical. Gate-level simulation of the key tests after place-and-route, timing signoff at 50 MHz, and a 24-hour FPGA loopback soak on real devices.
+7. Physical. Gate-level simulation of the key tests after place-and-route, timing signoff at 50 MHz, and a 24-hour FPGA loopback soak on real devices.
 
 Status, 8 Oct 2026:
 - 1 and 2 are done for the Event Machines and the Ear (test/test.py; 60 random two-EM programs match the ISS every cycle; the Ear's 72 features match ear/features.py window by window).
@@ -228,8 +227,7 @@ Status, 8 Oct 2026:
 - 4 is partial: 27 Event Machine properties (scheduler, LATE, WAIT timeouts, FIFOs, PC, HALT) are proved by k-induction, every one with a planted bug that fails it (verify/README.md). Capture and the recorder are planned; the recorder waits for Watch.
 - 5 is planned for 13 Dec.
 - 6 is on simulated buses only (ear/REPORT.md); FPGA captures wait for the FPGA.
-- 7 is planned: no LLM-proposed property or mutation has been measured yet.
-- 8 is done for the current blocks (gate-level simulation and signoff at 50 MHz in CI, spec section 8); the FPGA soak waits for the FPGA.
+- 7 is done for the current blocks (gate-level simulation and signoff at 50 MHz in CI, spec section 8); the FPGA soak waits for the FPGA.
 
 Traceability: each ISA line maps to an ISS routine, a formal property and a test in a matrix in the repo, and GitHub Actions runs the whole stack on every push, alongside the Tiny Tapeout GDS action. The RTL language is decided in section 12; either way the ISS is the single source of truth and the prover in section 10 sits on top of it.
 
@@ -243,7 +241,7 @@ Method: symbolic execution of the ISS. A program is at most 32 words, its loops 
 
 Chain of trust, stated in the write-up exactly like this: the RTL matches the ISS by bounded formal equivalence of the Event Machine against a Verilog transliteration of the ISS semantics (SymbiYosys, depth at least the longest instruction) plus constrained-random differential testing; the ISS running the program satisfies the contract by Z3. That is a proof at the ISS level with the RTL bounded-equivalent and tested, not "fully verified silicon", and it is still stronger than anything a PIO program has. Status, 8 Oct 2026: the bounded equivalence check is not built. Today the RTL-to-ISS link is cycle-exact differential testing plus 27 SymbiYosys properties of the Event Machine, proved by k-induction against times computed from isa.yaml (verify/README.md).
 
-What it buys in the competition: an LLM writes the firmware for a protocol it was never shown, the prover accepts or rejects it, and the accepted program loads with no human code review. That is the AI-assisted design loop the brief describes, closed. Milestones: UART transmit contract proven by 25 Oct; SPI and I2C by 29 Nov; the "LLM writes PS/2, prover accepts" demo by 20 Dec.
+What it buys in the competition: firmware for a protocol the chip was never designed for is accepted or rejected by the prover, and the accepted program loads with no code review. That is the flexibility the organisers judge first, made checkable. Milestones: UART transmit contract proven by 25 Oct; SPI and I2C by 29 Nov; the "PS/2 firmware, prover accepts" demo by 20 Dec.
 
 ## Ethernet stretch: Manchester serializer and DDR capture
 
@@ -274,13 +272,13 @@ One five-minute video, recorded on the FPGA prototype in December and re-shot on
 1. Clip the chip onto an undocumented bus: the internal I2C of a cheap consumer device, or a UART console.
 2. The Ear's LEDs show the class and the speed register shows the bit period.
 3. A Watch rule triggers and the flight recorder dumps the frames.
-4. An LLM is handed the datasheet (or the captured frames) and writes the firmware.
+4. Firmware for the bus is written from its datasheet (or from the captured frames).
 5. `shruti prove` accepts it. If a first attempt was rejected, show that too; judges trust a counterexample more than a green tick.
 6. `shruti load`, the chip talks to the device, the host shows the data.
 7. Ethernet: the switch link LED comes on, then tcpdump shows the frame.
 8. Thirty seconds of fuzzing: mutated frames against the device, response latencies read at 20 ns.
 
-Deliverables in the submission: the video, the README pitch, this spec, and a verification report whose centre is a bugs-found-per-method table, including where the LLM red team failed. Their checklist: a public repository with the RTL, tests and a passing GDS and precheck from the Tiny Tapeout flow; architecture and instruction-set documentation; the assembler with example programs; and a write-up of the verification approach.
+Deliverables in the submission: the video, the README pitch, this spec, and a verification report whose centre is a bugs-found-per-method table. The organisers' checklist (9 Oct 2026): a public repository with the RTL, tests and a passing GDS and precheck from the Tiny Tapeout flow; architecture and instruction-set documentation; the assembler with example programs; and a write-up of the verification approach.
 
 ## Risks and cut list
 
@@ -313,7 +311,7 @@ Submission is targeted for 12 Jan 2027, six days before the 18 Jan 2027 deadline
 | 29 Nov 2026 | Checkpoint: both EMs, host SPI, monitors, recorder and Ear integrated; UART, SPI and I2C pass protocol tests and their contracts are proven; placed density under the flow's 60% target and timing met at 50 MHz, or the cut list applies (v1.0 said a cell count under 13,000, which section 8's measurements show is about half the real capacity) | Gautam | Contracts proven: UART TX (any number of frames), UART RX, SPI master, I2C master (one transaction) |
 | 6 Dec 2026 | FPGA bring-up against a USB-UART adapter, SPI flash and I2C sensor; capture dataset started; Ethernet link pulses light a switch LED if the serializer is in | Gautam |  |
 | 13 Dec 2026 | Formal suite closes, classifier proof included; Ear fine-tuned on FPGA captures; confusion matrix and OOD numbers recorded | Gautam | Started 8 Oct: 27 Event Machine properties proved by k-induction, each failed by a planted bug, in CI (verify/README.md); OOD numbers on simulated buses recorded (ear/REPORT.md); classifier proof, capture and recorder properties not started |
-| 20 Dec 2026 | Feature freeze; low-speed USB, Ethernet frame transmit and the LLM-written, prover-accepted PS/2 firmware demo count only if already passing | Both |  |
+| 20 Dec 2026 | Feature freeze; low-speed USB, Ethernet frame transmit and the prover-accepted PS/2 firmware demo count only if already passing | Both |  |
 | 4 Jan 2027 | Place-and-route, timing signoff at 50 MHz, gate-level simulation of key tests | Gautam |  |
 | 12 Jan 2027 | Submission: README, ISA reference, verification report with bugs-per-method table, demo video | Gautam |  |
 | 18 Jan 2027 | Jane Street deadline (buffer) | |  |

@@ -39,7 +39,7 @@ Docs (audit of the claims against the evidence, 5 Oct; fixed 8 Oct)
 - An FPGA prototype "proven against" real devices, with a badge for a workflow that never ran: no FPGA build exists.
 - The Ear "flags traffic it does not recognise": the out-of-distribution flag misses foreign and held-out traffic (ear/REPORT.md).
 - "A 9600-baud UART and a 1-Mbaud UART produce the same interval histogram": true of the features, but at 9,600 baud a window holds about 6 edges and is gated.
-- "An LLM red team whose bug yield is measured": planned, not measured.
+- "A red team whose bug yield is measured": planned, not measured (since dropped from the plan).
 - "Every protocol program ships with a machine-checked proof": the SPI slave does not have one.
 - Stale numbers: ~10,900 cells estimated (27,789 synthesised), 28% utilisation (68.6%), and "Next: the Ear" after the Ear was built.
 - "Firmware library with cocotb tests against bus models": the firmware is tested on the ISS against peer models; only UART transmit runs on the RTL.
