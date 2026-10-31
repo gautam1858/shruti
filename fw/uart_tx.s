@@ -3,13 +3,19 @@
 ; P is 16 bits, so one step per bit reaches down to 763 baud at 50 MHz. The SLOW
 ; build (-D SLOW=1, or fw.load("uart_tx", SLOW=1)) takes three steps per bit and
 ; P = a third of the bit period: 300 baud is P = 55,556.
+; Pins: Tiny Tapeout's recommended Pmod pinout for UART on the uio header, top
+; row by default (TXD = uio[1]); -D ROW=1 moves it to the bottom row (uio[5]).
 ; Host interface: write bytes to the TX FIFO; each becomes one frame.
 ; Back-to-back bytes are sent with no gap; after idle the start bit follows
 ; 2 cycles after the byte arrives.
 
 .equ SLOW 0
-
-.pin tx B0
+.equ ROW 0
+.if ROW
+.pin tx B5
+.else
+.pin tx B1
+.endif
 
         SET   tx, 1              ; line idles high
         SHIFT out, lsb, 8        ; LSB first, 8 data bits

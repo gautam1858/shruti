@@ -154,7 +154,7 @@ Twelve watchable bus pins, a 3-wire host SPI, and five status outputs use all 24
 
 Register map over SPI (8-bit command, 8-bit address, data; the part built so far, with its timing, is in docs/host-interface.md): PROG0 and PROG1 (32 x 16 bits each), WEIGHTS (1,344 bits), FEATURES (72 bytes, read), RECORDER (32 x 21 bits, read), MON0-3 config, EAR config (4-pin select, margin, floor, window length), EM control (run, halt, reset, PC), EMx_P bit period and EMx_CFG shift configuration, TX and RX FIFOs (4 deep per EM), STATUS (including the sticky LATE, OVF and UNF flags per EM). Every bit of program, weights and configuration is host-loaded; nothing protocol-specific is fixed in silicon.
 
-Electrical: logic levels are whatever the Tiny Tapeout board provides (confirm 3.3 V in week one). I2C uses open-drain mode with external pull-ups; low-speed USB needs the external 1.5 kohm pull-up on D- and a level check, proven on the FPGA before it is claimed.
+Electrical: logic levels are whatever the Tiny Tapeout board provides (the organisers confirm 3.3 V I/O on the demo board; pull-ups, transceivers and level shifting go on a Pmod). The firmware library defaults to Tiny Tapeout's recommended Pmod pinouts on `uio` (fw/README.md), so standard Pmods plug in. I2C uses open-drain mode with external pull-ups; low-speed USB needs the external 1.5 kohm pull-up on D- and a level check, proven on the FPGA before it is claimed.
 
 ## Memory-first area budget
 

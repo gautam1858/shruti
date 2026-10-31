@@ -9,6 +9,8 @@
 ; SYNC flag 2 is set at each START or repeated START (the next byte is an
 ; address) and flag 3 at each STOP.
 ; Host setup: none; CFG must keep the reset OUT word length of 8 bits.
+; Pins: Tiny Tapeout's recommended Pmod pinout for I2C on the uio header, top
+; row by default (SCL = uio[2], SDA = uio[3]); -D ROW=1 moves it to the bottom row (uio[6], uio[7]).
 ; Both lines are open-drain. Only the first bit of a byte can turn out to be a
 ; STOP or a repeated START, so only there does the program watch SDA while SCL
 ; is high, polling both lines every 2 cycles; an SDA change counts as data if
@@ -16,8 +18,14 @@
 ; The ACK goes out 4 cycles after the target sees SCL fall, and SCL is released
 ; 16 cycles (320 ns at 50 MHz) after that. The program is exactly 32 words.
 
-.pin scl B4
-.pin sda B5
+.equ ROW 0
+.if ROW
+.pin scl B6
+.pin sda B7
+.else
+.pin scl B2
+.pin sda B3
+.endif
 
         SET   scl, 1, od         ; release both lines (open-drain)
         SET   sda, 1, od

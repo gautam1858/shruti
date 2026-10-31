@@ -3,6 +3,8 @@
 ; high for P, for standard mode; FAST = 1 (-D FAST=1, or fw.load("i2c_master",
 ; FAST=1)) holds it low for P and high for P/2, the shape fast mode needs
 ; (tLOW 1.3 us against tHIGH 0.6 us), so 400 kHz is reachable.
+; Pins: Tiny Tapeout's recommended Pmod pinout for I2C on the uio header, top
+; row by default (SCL = uio[2], SDA = uio[3]); -D ROW=1 moves it to the bottom row (uio[6], uio[7]).
 ; Host setup: P = the SCL low time in cycles; CFG = OSR MSB-first, 8-bit
 ; words (EMx_CFG), because the program has no room for its own SHIFT.
 ; SCL is high for P (or P/2) plus the 2 cycles it takes to see it rise, so at
@@ -27,8 +29,14 @@
 .define THIGH P
 .endif
 
+.equ ROW 0
+.if ROW
 .pin scl B6
 .pin sda B7
+.else
+.pin scl B2
+.pin sda B3
+.endif
 
         SET   scl, 1, od         ; release both lines (open-drain)
         SET   sda, 1, od

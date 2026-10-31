@@ -8,10 +8,16 @@
 ; Faster input loses bytes without setting any flag.
 ; P is 16 bits, so one step per bit reaches down to 763 baud at 50 MHz. The SLOW
 ; build (-D SLOW=1) takes three steps per bit and P = a third of the bit period.
+; Pins: Tiny Tapeout's recommended Pmod pinout for UART on the uio header, top
+; row by default (RXD = uio[2]); -D ROW=1 moves it to the bottom row (uio[6]).
 
 .equ SLOW 0
-
-.pin rx M0
+.equ ROW 0
+.if ROW
+.pin rx B6
+.else
+.pin rx B2
+.endif
 
 idle:   SHIFT in, lsb, 8         ; clear the ISR
         WAIT  rx, fall           ; start bit edge: T := its timestamp

@@ -8,10 +8,10 @@ This revision of the RTL (milestone 1) has both Event Machines, the 24-bit times
 
 ## How to test
 
-Connect an SPI master (mode 0, SCK at most the core clock / 8) to `ui[0]` SCK, `ui[1]` MOSI, `ui[2]` CS_n and `uo[0]` MISO. A transaction is a command byte (`0x00` write, `0x80` read), an address byte and data bytes; `docs/host-interface.md` has the register map. To send UART bytes on `uio[0]`: write the 12 words of `fw/uart_tx.s` to program addresses 0x00-0x17 (low byte first), the bit period in core cycles to 0x82-0x83 (e.g. 434 for 115200 baud at 50 MHz), the bytes to the TX FIFO at 0x86, and 1 to 0x80 to start. `uo[1]` goes high if an Event Machine halts. `test/test.py` does exactly this in cocotb and checks the pin against the instruction-set simulator cycle for cycle.
+Connect an SPI master (mode 0, SCK at most the core clock / 8) to `ui[0]` SCK, `ui[1]` MOSI, `ui[2]` CS_n and `uo[0]` MISO. A transaction is a command byte (`0x00` write, `0x80` read), an address byte and data bytes; `docs/host-interface.md` has the register map. To send UART bytes on `uio[1]` (TXD in Tiny Tapeout's Pmod UART pinout): write the 12 words of `fw/uart_tx.s` to program addresses 0x00-0x17 (low byte first), the bit period in core cycles to 0x82-0x83 (e.g. 434 for 115200 baud at 50 MHz), the bytes to the TX FIFO at 0x86, and 1 to 0x80 to start. `uo[1]` goes high if an Event Machine halts. `test/test.py` does exactly this in cocotb and checks the pin against the instruction-set simulator cycle for cycle.
 
 Final design: the demo board's RP2040 acts as host over the 3-wire SPI on `ui[2:0]` and `uo[0]`, loads the Event Machine programs and the Ear's weights, and reads back features and the flight recorder. The identified protocol class appears on `uo[6:4]`, so the on-board LEDs show it with no host software.
 
 ## External hardware
 
-None for the baseline. I2C needs external pull-ups (bus pins support open-drain mode). Low-speed USB needs the external 1.5 kohm pull-up. 10BASE-T (stretch) needs series resistors and a MagJack transformer.
+None for the baseline. The I/O is 3.3 V on the demo board. The firmware library uses Tiny Tapeout's recommended Pmod pinouts on `uio` (`fw/README.md`): UART TXD `uio[1]` and RXD `uio[2]`; SPI CS, MOSI, MISO and SCK on `uio[0..3]`; I2C SCL `uio[2]` and SDA `uio[3]`; each can move to the bottom row (`uio[4..7]`) at assembly. I2C needs external pull-ups (bus pins support open-drain mode). Low-speed USB needs the external 1.5 kohm pull-up. 10BASE-T (stretch) needs series resistors and a MagJack transformer.

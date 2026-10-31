@@ -12,6 +12,9 @@ from fw.peers import (I2cMaster, I2cSlave, OpenDrainBus, SpiSlave, i2c_condition
 from iss import Sim, simulate
 
 UART_B = [16, 50, 434, 5208]            # 3.125 Mbaud, 1 Mbaud, 115200, 9600 at 50 MHz
+# Default pins: Tiny Tapeout's recommended Pmod pinout, top row (uio[0..3] = B0-B3); the
+# bottom-row builds (ROW = 1) use B4-B7.
+TX = 1          # B1, UART TXD
 
 
 def test_word_counts_fit_the_program_memory():
@@ -29,7 +32,7 @@ def test_uart_tx_received_by_peer(B):
     rng = random.Random(B)
     data = [rng.randrange(256) for _ in range(6)]
     res = simulate(fw.load("uart_tx"), 1 << 40, P=B, host_tx=[(0, b) for b in data])
-    frames = uart_decode(res.pin_trace(0), res.initial[0], B, res.cycles)
+    frames = uart_decode(res.pin_trace(TX), res.initial[TX], B, res.cycles)
     assert [b for _, b, _ in frames] == data
     assert all(ok for _, _, ok in frames)
     starts = [t for t, _, _ in frames]
@@ -39,7 +42,7 @@ def test_uart_tx_received_by_peer(B):
 
 # -- UART RX ------------------------------------------------------------------------------
 
-RX = 8          # M0
+RX = 2          # B2, UART RXD
 
 
 def run_rx(stim, B, cycles=None):
@@ -118,7 +121,7 @@ def test_uart_at_common_baud_rates(baud):
     period = F_CLK / baud
     data = [0x00, 0xFF, 0x55, 0xAA, 0x80, 0x01, 0x3C]
     res = simulate(fw.load("uart_tx", SLOW=slow), 1 << 40, P=P, host_tx=[(0, b) for b in data])
-    frames = uart_decode(res.pin_trace(0), res.initial[0], period, res.cycles)
+    frames = uart_decode(res.pin_trace(TX), res.initial[TX], period, res.cycles)
     assert [b for _, b, _ in frames] == data and all(ok for _, _, ok in frames)
     assert not res.ems[0].LATE
     stim = uart_stimulus(RX, data, period, gap=0)
@@ -143,7 +146,8 @@ def test_uart_slow_builds_fit():
 
 
 def test_uart_loopback_tx_to_rx_on_two_ems():
-    """EM0 transmits on B0, EM1 receives; the peer wiring copies B0 onto M0."""
+    """EM0 transmits on the top row's TXD (B1), EM1 receives on the bottom row's RXD (B6);
+    the peer wiring copies one onto the other."""
     B = 100
     data = [0x12, 0x34, 0xAB]
 
@@ -152,23 +156,45 @@ def test_uart_loopback_tx_to_rx_on_two_ems():
     class Loop(Device):
         def attach(self, sim):
             super().attach(sim)
-            self.prev = sim.pad[0]
+            self.prev = sim.pad[TX]
 
         def on_cycle(self, c):
-            v = self.sim.pad[0]
+            v = self.sim.pad[TX]
             if v != self.prev:
-                self.sim.set_external(RX, v, c + 1)
+                self.sim.set_external(6, v, c + 1)
                 self.prev = v
 
-    sim = Sim([fw.load("uart_tx"), fw.load("uart_rx")], P=[B, B], devices=[Loop()],
+    sim = Sim([fw.load("uart_tx"), fw.load("uart_rx", ROW=1)], P=[B, B], devices=[Loop()],
               host_tx=[[(0, b) for b in data], []])
     res = sim.run(40 * B)
     assert res.host_rx[1] == data
 
 
+# -- Pin rows -----------------------------------------------------------------------------
+
+def test_bottom_row_builds():
+    """With ROW = 1 each master or transmitter uses the bottom Pmod row (B4-B7). The SPI
+    slave's and I2C target's bottom-row builds run in the two-EM pairing tests."""
+    data = [0x12, 0x34, 0xAB]
+    res = simulate(fw.load("uart_tx", ROW=1), 1 << 40, P=100, host_tx=[(0, b) for b in data])
+    assert [b for _, b, _ in uart_decode(res.pin_trace(5), res.initial[5], 100,
+                                         res.cycles)] == data
+    res = simulate(fw.load("uart_rx", ROW=1), 6000, P=100,
+                   stimulus=uart_stimulus(6, data, 100))
+    assert res.host_rx[0] == data
+    slave = SpiSlave(7, 5, 6, 4, responses=[0x5A, 0xC3])
+    res = Sim([fw.load("spi_master", ROW=1)], P=[10], devices=[slave],
+              host_tx=[[(0, 0xA5), (0, 0x3C)]]).run(2000)
+    assert slave.received == [0xA5, 0x3C] and res.host_rx[0] == [0x5A, 0xC3]
+    slave = I2cSlave(6, 7, address=0x50)
+    res = Sim([fw.load("i2c_master", ROW=1)], P=[65], cfg=[{"OUT_MSB": 1, "OUT_N": 7}],
+              devices=[slave], host_tx=[[(0, 0xA0), (0, 0x42)]]).run(10_000)
+    assert slave.transactions == [[0xA0, 0x42]]
+
+
 # -- SPI master ---------------------------------------------------------------------------
 
-SCK, MOSI, MISO, CS = 2, 3, 9, 5
+CS, MOSI, MISO, SCK = 0, 1, 2, 3
 
 
 def spi_master(mode):
@@ -216,7 +242,7 @@ def test_spi_master_cs_high_time_between_bytes():
 
 # -- I2C master ---------------------------------------------------------------------------
 
-SCL, SDA = 6, 7
+SCL, SDA = 2, 3
 I2C_CFG = {"OUT_MSB": 1, "OUT_N": 7}
 
 
@@ -294,7 +320,7 @@ def test_i2c_two_transactions_keep_bus_free_time():
 
 # -- I2C target ---------------------------------------------------------------------------
 
-T_SCL, T_SDA = 4, 5
+T_SCL, T_SDA = 2, 3      # the target alone, top row; paired with the master, bottom row
 ACK, NACK = 0x00, 0xFF
 TARGET_SRC = (Path(fw.__file__).parent / "i2c_target.s").read_text()
 # Bytes whose bit 7 differs from bit 6, so SDA changes right after the first clock of a byte
@@ -372,8 +398,8 @@ def test_i2c_master_and_target_on_two_ems(fast, P, period):
     """EM0 runs i2c_master, EM1 runs i2c_target; the board joins their pins as two open-drain
     lines. EM1's host ACKs the address and the first data byte and NACKs the second."""
     data = [0xA0, 0x12, 0xA5]
-    bus = OpenDrainBus([[SCL, T_SCL], [SDA, T_SDA]])
-    sim = Sim([fw.load("i2c_master", FAST=fast), fw.load("i2c_target")], P=[P, 0],
+    bus = OpenDrainBus([[SCL, 6], [SDA, 7]])
+    sim = Sim([fw.load("i2c_master", FAST=fast), fw.load("i2c_target", ROW=1)], P=[P, 0],
               cfg=[I2C_CFG, {}], devices=[bus],
               host_tx=[[(0, b) for b in data], [(0, ACK), (0, ACK), (0, NACK)]])
     res = sim.run(40 * period)
@@ -450,11 +476,11 @@ def test_i2c_target_scenarios_catch_planted_bugs(bug):
 
 from fw.peers import Wire, spi_master_stimulus  # noqa: E402
 
-S_SCK, S_MOSI, S_CS, S_MISO = 8, 10, 11, 4
+S_SCK, S_MOSI, S_CS, S_MISO = 3, 1, 0, 2    # the slave alone, top row
 
 
-def spi_slave(mode):
-    return fw.load("spi_slave", CPOL=mode >> 1, CPHA=mode & 1)
+def spi_slave(mode, row=0):
+    return fw.load("spi_slave", CPOL=mode >> 1, CPHA=mode & 1, ROW=row)
 
 
 def run_spi_slave(out, replies, half, setup, mode=0):
@@ -497,14 +523,14 @@ def test_spi_slave_limits(mode):
 @pytest.mark.parametrize("mode", [0, 1, 2, 3])
 def test_spi_master_and_slave_on_two_ems(mode):
     """EM0 runs spi_master, EM1 runs spi_slave, in the same mode; the board wires them
-    together."""
+    together: the master on the top row (B0-B3), the slave on the bottom row (B4-B7)."""
     P = 8 if mode & 1 else 9                   # the smallest P this pairing supports
     out = [0x12, 0xFE, 0x81]
     replies = [0xC0, 0x0F, 0x55]
 
     def run(p):
-        wires = Wire([(SCK, S_SCK), (MOSI, S_MOSI), (CS, S_CS), (S_MISO, MISO)])
-        sim = Sim([spi_master(mode), spi_slave(mode)], P=[p, 0], devices=[wires],
+        wires = Wire([(SCK, 7), (MOSI, 5), (CS, 4), (6, MISO)])
+        sim = Sim([spi_master(mode), spi_slave(mode, row=1)], P=[p, 0], devices=[wires],
                   host_tx=[[(100, b) for b in out], [(0, b) for b in replies]])
         return sim.run(3000)
 

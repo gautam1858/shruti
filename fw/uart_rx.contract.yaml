@@ -5,7 +5,7 @@ kind: receiver
 assume:
   P: {min: 16, max: 65535}         # bit period B in cycles, written by the host
   rx:
-    pin: M0
+    pin: B2
     frames: [d0, d1]               # two symbolic bytes, back to back or with any gap
     first_start: 20                # the line idles high at least until this cycle
     jitter: "P//16"                # each edge after the start edge may move by up to P/16

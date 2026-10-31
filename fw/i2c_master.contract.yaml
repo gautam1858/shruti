@@ -8,7 +8,7 @@ modes:                             # each proved on the program assembled with i
   - {name: fast, defines: {FAST: 1}, high: P/2}        # SCL high at least P/2
 assume:
   P: {min: 65, max: 2000}          # the SCL low time (65 = fast-mode tLOW at 50 MHz)
-  pins: {scl: B6, sda: B7}
+  pins: {scl: B2, sda: B3}
   cfg: {OUT_MSB: 1, OUT_N: 7}      # written by the host (the program has no room for SHIFT)
   bytes: [d0, d1]                  # address byte and one data byte, queued together
   stretch: {max: 1000}             # cycles the slave may hold SCL low after each ACK

@@ -2,6 +2,8 @@
 ; The mode is set at assembly: CPOL and CPHA below, overridden with -D CPOL=1 -D CPHA=1
 ; (python -m asm) or fw.load("spi_master", CPOL=1, CPHA=1). Mode 0 is the default.
 ; Host setup: P = half the SCK period in cycles.
+; Pins: Tiny Tapeout's recommended Pmod pinout for SPI on the uio header, top
+; row by default (CS, MOSI, MISO, SCK = uio[0..3]); -D ROW=1 moves it to the bottom row (uio[4..7]).
 ; Host interface: each byte written to the TX FIFO is sent on MOSI; the byte
 ; clocked in on MISO at the same time is pushed to the RX FIFO.
 ; Timing: SCK idles at CPOL. CS falls; the first leading edge (SCK leaving its
@@ -21,10 +23,18 @@
 .define ACTIVE 1
 .endif
 
-.pin sck  B2
-.pin mosi B3
-.pin miso M1
-.pin cs   B5
+.equ ROW 0
+.if ROW
+.pin cs   B4
+.pin mosi B5
+.pin miso B6
+.pin sck  B7
+.else
+.pin cs   B0
+.pin mosi B1
+.pin miso B2
+.pin sck  B3
+.endif
 
         SET   cs, 1
         SET   sck, IDLE

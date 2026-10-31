@@ -46,6 +46,9 @@ async def host_spi_registers(dut):
 
 # -- the UART transmitter out of a pin -----------------------------------------------------
 
+TXD = 1         # uart_tx.s drives B1: Tiny Tapeout's Pmod UART TXD, top row
+
+
 async def run_uart_tx(chip, B, data):
     words = fw.load("uart_tx")
     await chip.setup_em(0, words, P=B, tx=data[:4])
@@ -59,9 +62,9 @@ async def run_uart_tx(chip, B, data):
         await chip.write(EM_BASE[0] + TXPORT, [b])
         host_tx.append((chip.last_rise + 4 - start, b))
     await chip.ticks(start + cycles - chip.k)
-    got = chip.pad_trace(start, start + cycles, pins=[0])
+    got = chip.pad_trace(start, start + cycles, pins=[TXD])
     ref = Sim([words], P=[B], host_tx=[host_tx], rx_drain=False).run(cycles)
-    assert got == ref.trace, "pin B0 differs from the ISS"
+    assert got == ref.trace, "pin B1 differs from the ISS"
     frames = uart_decode([(c, v) for c, _, v in got], 1, B, cycles)
     assert [b for _, b, _ in frames] == data and all(ok for _, _, ok in frames)
     assert (await chip.read_reg(0, FLAGS)) == 0, "no LATE, OVF or UNF"
@@ -69,7 +72,8 @@ async def run_uart_tx(chip, B, data):
 
 @cocotb.test()
 async def uart_tx_out_of_a_pin(dut):
-    """fw/uart_tx.s on EM0 sends bytes on B0, matching the ISS cycle for cycle."""
+    """fw/uart_tx.s on EM0 sends bytes on B1 (the Pmod UART TXD pin, uio[1]), matching the
+    ISS cycle for cycle."""
     chip = await new_chip(dut)
     rng = random.Random(1)
     for B in ([16, 50] if not GATES else [16]):

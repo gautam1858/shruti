@@ -2,6 +2,9 @@
 ; The mode is set at assembly: CPOL and CPHA below, overridden with -D CPOL=1 -D CPHA=1
 ; (python -m asm) or fw.load("spi_slave", CPOL=1, CPHA=1). Mode 0 is the default.
 ; Host setup: none (the master sets the clock).
+; Pins: Tiny Tapeout's recommended Pmod pinout for SPI on the uio header, top
+; row by default (CS, MOSI, MISO, SCK = uio[0..3]); -D ROW=1 moves it to the bottom row (uio[4..7]).
+; The slave drives only MISO.
 ; Host interface: queue the reply byte in the TX FIFO before the master
 ; selects the slave; the byte received on MOSI is pushed to the RX FIFO. If no
 ; reply byte is queued, the slave waits for one and ignores that selection.
@@ -32,10 +35,18 @@
 .define TRAIL fall
 .endif
 
-.pin sck  M0
-.pin mosi M2
-.pin cs   M3
-.pin miso B4
+.equ ROW 0
+.if ROW
+.pin cs   B4
+.pin mosi B5
+.pin miso B6
+.pin sck  B7
+.else
+.pin cs   B0
+.pin mosi B1
+.pin miso B2
+.pin sck  B3
+.endif
 
         SHIFT out, msb, 8
         SHIFT in, msb, 8
