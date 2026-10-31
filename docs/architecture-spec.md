@@ -149,7 +149,7 @@ Twelve watchable bus pins, a 3-wire host SPI, and five status outputs use all 24
 | uo_out[0] | Host SPI MISO |
 | uo_out[1..2] | IRQ, trigger-out |
 | uo_out[3] | Ear confident flag |
-| uo_out[4..6] | Ear class, 3 bits, straight to the demo board LEDs |
+| uo_out[4..6] | Ear class, 3 bits, straight to the demo board LEDs: the last window that was confident and not OOD, so the LEDs hold an answer between windows (0 after reset) |
 | uo_out[7] | Ear OOD flag |
 
 Register map over SPI (8-bit command, 8-bit address, data; the part built so far, with its timing, is in docs/host-interface.md): PROG0 and PROG1 (32 x 16 bits each), WEIGHTS (1,344 bits), FEATURES (72 bytes, read), RECORDER (32 x 21 bits, read), MON0-3 config, EAR config (4-pin select, margin, floor, window length), EM control (run, halt, reset, PC), EMx_P bit period and EMx_CFG shift configuration, TX and RX FIFOs (4 deep per EM), STATUS (including the sticky LATE, OVF and UNF flags per EM). Every bit of program, weights and configuration is host-loaded; nothing protocol-specific is fixed in silicon.

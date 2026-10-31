@@ -12,7 +12,7 @@ The host (the demo board's RP2040, or any SPI master) loads programs, sets up an
 | uo_out[0] | MISO |
 | uo_out[1] | IRQ: high while any Event Machine is halted |
 | uo_out[3] | Ear confident |
-| uo_out[6:4] | Ear class |
+| uo_out[6:4] | Ear class: the last window that was confident and not out-of-distribution, 0 after reset. EAR_RESULT has the latest window's class |
 | uo_out[7] | Ear out-of-distribution |
 
 ## SPI protocol

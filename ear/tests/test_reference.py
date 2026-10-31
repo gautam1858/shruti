@@ -192,6 +192,16 @@ def test_accumulator_fits_16_bits_for_any_input():
     assert 127 + 72 * 63 < 32768 and -128 - 72 * 63 >= -32768
 
 
+def test_class_pins_hold_the_last_confident_in_distribution_class():
+    from ear.mlp import Result
+    r = lambda cls, conf, ood: Result(cls, conf, ood, [], [])
+    pins = 0
+    for res, want in [(r(3, False, False), 0), (r(3, True, False), 3), (r(5, False, False), 3),
+                      (r(6, True, True), 3), (r(2, True, False), 2)]:
+        pins = Model.pins_class(pins, res)
+        assert pins == want
+
+
 def test_thresholds_shift_the_hidden_units():
     w1 = [[0] * 72 for _ in range(8)]
     w1[0][0] = 1

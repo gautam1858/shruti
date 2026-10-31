@@ -438,12 +438,14 @@ def random_model(rng):
 
 
 def ear_out(uo):
-    return (uo >> 4) & 7, (uo >> 3) & 1, (uo >> 7) & 1          # class, confident, ood
+    return (uo >> 4) & 7, (uo >> 3) & 1, (uo >> 7) & 1          # pins' class, confident, ood
 
 
 async def ear_case(chip, model, pad_edges, cycles, initial=(1, 1, 1, 1)):
     """Drive pad edges (cycle, pin 0-3, level) on B0-B3 from the Ear's first cycle and check
-    every classification the reference makes, at the cycle the reference says it lands."""
+    every classification the reference makes, at the cycle the reference says it lands: the
+    confident and OOD pins show the latest window, the class pins the last window that was
+    confident and not OOD (0 after reset)."""
     await chip.reset()
     chip.ext = sum(v << p for p, v in enumerate(initial)) | 0xF0
     await chip.ticks(4)
@@ -454,13 +456,17 @@ async def ear_case(chip, model, pad_edges, cycles, initial=(1, 1, 1, 1)):
     edges = filter_pins(list(initial), [(c + 20, p, v) for c, p, v in pad_edges if c + 20 < cycles], 0)
     windows = extract(list(initial), edges, cycles)
     shown = ear_out(chip.outs[start])
+    assert shown[0] == 0, "class pins are 0 after reset"
+    pins = 0
     checked = 0
     for w in windows:
         at = start + w.end + 649                  # first cycle showing this window's result
         if at >= start + cycles:
             break
         r = model.infer(w.features, w.edges)
-        want = (r.cls, int(r.confident), int(r.ood))
+        chip.ear_held = getattr(chip, "ear_held", 0) + (Model.pins_class(pins, r) != r.cls)
+        pins = Model.pins_class(pins, r)
+        want = (pins, int(r.confident), int(r.ood))
         before = ear_out(chip.outs[at - 1])
         assert before == shown, f"window at {w.start}: outputs changed before the result was due"
         assert ear_out(chip.outs[at]) == want, \
@@ -511,6 +517,8 @@ async def ear_matches_reference_with_random_weights(dut):
                     edges.append((t, p, level[p]))
         total += await ear_case(chip, model, edges, 9000)
     assert total >= (4 if not GATES else 1)
+    if not GATES:
+        assert chip.ear_held > 0, "no window kept an earlier class on the pins" 
 
 
 @cocotb.test(skip=GATES)

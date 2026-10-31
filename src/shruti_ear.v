@@ -50,9 +50,10 @@ module shruti_ear (
     input  wire        rtake,        // the host clocked the first bit of the byte at raddr
     output reg  [7:0]  rdata,
     // results
-    output reg  [2:0]  cls,
+    output reg  [2:0]  cls,          // the latest window's class, confidence and OOD flag
     output reg         conf,
-    output reg         ood
+    output reg         ood,
+    output reg  [2:0]  shown         // the last class that was confident and not OOD
 );
 
   // ------------------------------------------------------------------ host configuration
@@ -352,6 +353,8 @@ module shruti_ear (
   wire [2:0]         n_bestk = better ? o_k : bestk;
   wire signed [15:0] gap     = best - second;
   wire signed [15:0] floor_x = {{4{floor_[11]}}, floor_};
+  wire               w_conf  = gap >= $signed({8'd0, margin});
+  wire               w_ood   = best < floor_x || nedges < min_edges;
 
   // radix-4 division step: four times the remainder against 1, 2 and 3 lengths
   reg [19:0] r4, s1, s2, s3;
@@ -407,7 +410,7 @@ module shruti_ear (
       en <= 1'b0; hold <= 1'b0; sel <= 16'h3210; shift <= 4'd4; margin <= 8'd8;
       floor_ <= 12'd0; min_edges <= 9'd24; thr <= 64'd0;
       state <= S_RUN; p <= 10'd0; wlen <= 17'd0; nedges <= 9'd0; nwin <= 8'd0; valid <= 1'b0;
-      cls <= 3'd0; conf <= 1'b0; ood <= 1'b0;
+      cls <= 3'd0; conf <= 1'b0; ood <= 1'b0; shown <= 3'd0;
       ord <= 8'b11_10_01_00;
       hfs <= 3'd0; hft <= 4'd0; ldn <= 3'd0; ldbyte <= 8'd0;
       mfs <= 3'd0; mft <= 4'd0; mj <= 3'd0; mk <= 3'd0; mjj <= 3'd0; layer2 <= 1'b0;
@@ -550,8 +553,9 @@ module shruti_ear (
         end
         if (p == 10'd647) begin
           cls <= bestk;
-          conf <= gap >= $signed({8'd0, margin});
-          ood <= best < floor_x || nedges < min_edges;
+          conf <= w_conf;
+          ood <= w_ood;
+          if (w_conf && !w_ood) shown <= bestk;
           valid <= 1'b1;
           nwin <= nwin + 8'd1;
         end

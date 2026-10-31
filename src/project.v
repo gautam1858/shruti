@@ -13,7 +13,8 @@
  *   ui_in[3]     trigger in (unused so far)      uo_out[1]  IRQ: an Event Machine halted
  *   ui_in[4..7]  monitor-only pins M0-M3         uo_out[2]  trigger out (0 for now)
  *                                                uo_out[3]  Ear confident
- *                                                uo_out[6:4] Ear class, uo_out[7] Ear OOD
+ *                                                uo_out[6:4] Ear class (last confident one)
+ *                                                uo_out[7]  Ear OOD
  *   uio[0..7]    bus pins B0-B7, push-pull or open-drain per pin
  *
  * Host register map (8-bit addresses; see docs/host-interface.md):
@@ -179,14 +180,14 @@ module tt_um_gautam1858_shruti (
 
   // ------------------------------------------------------------------ the Ear
   wire [7:0] ear_rdata;
-  wire [2:0] ear_cls;
+  wire [2:0] ear_cls, ear_shown;
   wire       ear_conf, ear_ood;
 
   shruti_ear u_ear (
       .clk(clk), .rst_n(rst_n), .vis(filt_d), .vis_prev(filt_q),
       .wr(spi_wr), .waddr(spi_waddr), .wdata(spi_wdata),
       .raddr(spi_raddr), .rtake(spi_take), .rdata(ear_rdata),
-      .cls(ear_cls), .conf(ear_conf), .ood(ear_ood));
+      .cls(ear_cls), .conf(ear_conf), .ood(ear_ood), .shown(ear_shown));
 
   // ------------------------------------------------------------------ pin drivers
   // EM1 wins when both EMs drive a pin in the same cycle. Open-drain: level 0 pulls low,
@@ -267,7 +268,7 @@ module tt_um_gautam1858_shruti (
   end
 
   // ------------------------------------------------------------------ outputs
-  assign uo_out  = {ear_ood, ear_cls, ear_conf, 1'b0, halt0 | halt1, spi_miso};
+  assign uo_out  = {ear_ood, ear_shown, ear_conf, 1'b0, halt0 | halt1, spi_miso};
   assign uio_out = pin_out;
   assign uio_oe  = pin_oe;
 

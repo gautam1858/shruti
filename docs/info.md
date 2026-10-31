@@ -10,7 +10,7 @@ This revision of the RTL (milestone 1) has both Event Machines, the 24-bit times
 
 Connect an SPI master (mode 0, SCK at most the core clock / 8) to `ui[0]` SCK, `ui[1]` MOSI, `ui[2]` CS_n and `uo[0]` MISO. A transaction is a command byte (`0x00` write, `0x80` read), an address byte and data bytes; `docs/host-interface.md` has the register map. To send UART bytes on `uio[1]` (TXD in Tiny Tapeout's Pmod UART pinout): write the 12 words of `fw/uart_tx.s` to program addresses 0x00-0x17 (low byte first), the bit period in core cycles to 0x82-0x83 (e.g. 434 for 115200 baud at 50 MHz), the bytes to the TX FIFO at 0x86, and 1 to 0x80 to start. `uo[1]` goes high if an Event Machine halts. `test/test.py` does exactly this in cocotb and checks the pin against the instruction-set simulator cycle for cycle.
 
-Final design: the demo board's RP2040 acts as host over the 3-wire SPI on `ui[2:0]` and `uo[0]`, loads the Event Machine programs and the Ear's weights, and reads back features and the flight recorder. The identified protocol class appears on `uo[6:4]`, so the on-board LEDs show it with no host software.
+Final design: the demo board's RP2040 acts as host over the 3-wire SPI on `ui[2:0]` and `uo[0]`, loads the Event Machine programs and the Ear's weights, and reads back features and the flight recorder. The last protocol class identified with confidence (and not flagged out-of-distribution) appears on `uo[6:4]`, so the on-board LEDs show it with no host software and hold it between windows.
 
 ## External hardware
 

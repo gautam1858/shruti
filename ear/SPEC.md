@@ -93,5 +93,7 @@ The class and flags change at the end of the last pause cycle. The Python model 
 
 ## Host control (RTL)
 
+- **Class pins.** `uo_out[6:4]` show the class of the last window that was confident and not out-of-distribution, and 0 after reset, so LEDs on them hold an answer rather than flicker with every window. `uo_out[3]` (confident), `uo_out[7]` (OOD) and EAR_RESULT describe the latest window. `Model.pins_class` in `ear/mlp.py` is the reference.
+
 - **Enable.** The first window starts in the first cycle the enable bit is set. Clearing the enable during a pause lets the pause finish, so the weight ring comes back into place.
 - **HOLD.** With HOLD set, the Ear stops after the pause with the window's counters intact. The host reads the 72 features, in canonical order, through the FEATURE port, along with the result and the best logit. Clearing HOLD clears the counters in the cycle the write takes effect, and the next window starts in the cycle after. This is how `shruti teach` captures feature snapshots with no extra storage.

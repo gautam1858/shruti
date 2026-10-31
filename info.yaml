@@ -42,9 +42,9 @@ pinout:
   uo[1]: "IRQ"
   uo[2]: "TRIG_OUT (trigger to scope)"
   uo[3]: "EAR_CONF (identifier confident)"
-  uo[4]: "EAR_CLASS0 (identified protocol, bit 0)"
-  uo[5]: "EAR_CLASS1 (identified protocol, bit 1)"
-  uo[6]: "EAR_CLASS2 (identified protocol, bit 2)"
+  uo[4]: "EAR_CLASS0 (last confidently identified protocol, bit 0)"
+  uo[5]: "EAR_CLASS1 (last confidently identified protocol, bit 1)"
+  uo[6]: "EAR_CLASS2 (last confidently identified protocol, bit 2)"
   uo[7]: "EAR_OOD (traffic not recognised)"
 
   # Bidirectional pins

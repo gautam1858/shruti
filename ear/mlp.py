@@ -69,6 +69,12 @@ class Model:
         return Result(best_k, best - second >= self.cfg.margin,
                       best < self.cfg.floor or edges < self.cfg.min_edges, logits, hidden)
 
+    @staticmethod
+    def pins_class(previous: int, r: "Result") -> int:
+        """The class the uo_out[6:4] pins show after a window: its class if it was confident
+        and not out-of-distribution, otherwise the previous one (0 after reset)."""
+        return r.cls if r.confident and not r.ood else previous
+
     # -- weight chain ---------------------------------------------------------------------
 
     def weights(self) -> List[int]:
