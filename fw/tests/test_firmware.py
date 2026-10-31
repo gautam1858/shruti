@@ -92,6 +92,56 @@ def test_uart_rx_minimum_bit_period():
     assert res.host_rx[0] != data and not res.ems[0].LATE
 
 
+# -- UART at the common baud rates --------------------------------------------------------
+
+F_CLK = 50_000_000
+COMMON_BAUD = [300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400,
+               460800, 921600, 1_000_000, 2_000_000, 3_000_000]
+
+
+def baud_setup(baud):
+    """(SLOW, P, relative error of the bit period) for a baud rate at 50 MHz. One ADDT P
+    step per bit reaches down to 763 baud; below that the SLOW build takes three."""
+    slow = 1 if F_CLK / baud > 0xFFFF else 0
+    k = 3 if slow else 1
+    P = round(F_CLK / baud / k)
+    return slow, P, P * k * baud / F_CLK - 1
+
+
+@pytest.mark.parametrize("baud", COMMON_BAUD)
+def test_uart_at_common_baud_rates(baud):
+    """TX is decoded, and RX is fed, by a peer at the exact nominal rate, so the rounding of
+    P is part of the test. The bit period is within 0.5% of nominal up to 921,600 baud and
+    2% at 3 Mbaud."""
+    slow, P, err = baud_setup(baud)
+    assert abs(err) <= (0.005 if baud <= 921600 else 0.021)
+    period = F_CLK / baud
+    data = [0x00, 0xFF, 0x55, 0xAA, 0x80, 0x01, 0x3C]
+    res = simulate(fw.load("uart_tx", SLOW=slow), 1 << 40, P=P, host_tx=[(0, b) for b in data])
+    frames = uart_decode(res.pin_trace(0), res.initial[0], period, res.cycles)
+    assert [b for _, b, _ in frames] == data and all(ok for _, _, ok in frames)
+    assert not res.ems[0].LATE
+    stim = uart_stimulus(RX, data, period, gap=0)
+    res = simulate(fw.load("uart_rx", SLOW=slow), int(stim[-1][0] + 20 * period), P=P,
+                   stimulus=stim)
+    assert res.host_rx[0] == data and res.sync[0] == 0 and not res.ems[0].LATE
+
+
+@pytest.mark.parametrize("err", [-0.03, 0.03])
+def test_uart_rx_slow_build_tolerates_peer_clock_error(err):
+    slow, P, _ = baud_setup(300)
+    data = [0x00, 0xFF, 0x55]
+    stim = uart_stimulus(RX, data, F_CLK / 300 * (1 + err), gap=0)
+    res = simulate(fw.load("uart_rx", SLOW=slow), int(stim[-1][0] + 20 * F_CLK / 300), P=P,
+                   stimulus=stim)
+    assert res.host_rx[0] == data
+
+
+def test_uart_slow_builds_fit():
+    assert len(fw.load("uart_tx", SLOW=1)) == 18 and len(fw.load("uart_rx", SLOW=1)) == 22
+    assert baud_setup(600)[0] == 1 and baud_setup(1200)[0] == 0
+
+
 def test_uart_loopback_tx_to_rx_on_two_ems():
     """EM0 transmits on B0, EM1 receives; the peer wiring copies B0 onto M0."""
     B = 100

@@ -37,10 +37,11 @@ def uart_stimulus(pin: int, data: Sequence[int], period: float, start: int = 10,
     return edges
 
 
-def uart_decode(trace: Sequence[Tuple[int, int]], initial: int, period: int,
+def uart_decode(trace: Sequence[Tuple[int, int]], initial: int, period: float,
                 end: int) -> List[Tuple[int, int, bool]]:
-    """Receive 8N1 frames from a pin's (cycle, level) change list, sampling mid-bit.
-    Returns (start cycle, byte, stop bit ok)."""
+    """Receive 8N1 frames from a pin's (cycle, level) change list, sampling mid-bit. The
+    period may be fractional (a receiver at the exact nominal baud rate). Returns (start
+    cycle, byte, stop bit ok)."""
     def level_at(c: int) -> int:
         lvl = initial
         for t, v in trace:

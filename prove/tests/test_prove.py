@@ -32,7 +32,8 @@ def test_smallest_P_for_which_the_contract_holds():
 
 
 BROKEN = {
-    "missing stop-bit ADDT": ("        ADDT  P\n        OUT   tx, 1 @T+0", "        OUT   tx, 1 @T+0"),
+    "missing stop-bit ADDT": ("        JMP   !OSRE, bit         ; 8 data bits\n        ADDT  P\n",
+                              "        JMP   !OSRE, bit         ; 8 data bits\n"),
     "start anchored 1 cycle ahead": ("ADDT  2, now", "ADDT  1, now"),
     "half-period data bits": ("bit:    ADDT  P ", "bit:    ADDT  P/2"),
     "MSB first": ("SHIFT out, lsb, 8", "SHIFT out, msb, 8"),
