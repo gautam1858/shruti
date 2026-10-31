@@ -295,6 +295,7 @@ The two risks that decide the outcome are area after synthesis and the Ear gener
 | CMOS5L template or flow problems (new branch) | Counter does not reach GDS in week 1 | Email asic-competition@janestreet.com and the Tiny Tapeout Discord in week 1, not week 10 |
 | No partner by 11 Oct | Decided 23 Sep: solo | No USB, Ear kept. The single-EM cut is not taken: both EMs are already built and verified, and they use about 9% of the core |
 | Electrical unknowns on the demo board (open-drain, USB pull-ups) | | Prove on the FPGA; claim only what ran |
+| The GDS job hits GitHub's 6-hour limit | Job time near 6 h. Measured on 10 Oct 2026 (PR 2): gds 3 h 26 min, precheck 2 h 52 min, each its own job | Harden locally with the same Tiny Tapeout flow (https://tinytapeout.com/guides/local-hardening/), as the organisers suggest; an 8x4 build with more logic is the likely trigger |
 | Time, alongside the day job and other ventures | A missed checkpoint | Cut scope at the checkpoint, never the timeline |
 
 Cut order, cheapest first: 1. Manchester serializer and DDR capture. 2. CRC unit. 3. Monitors 4 to 2. 4. Recorder 32 to 16 entries. 5. Ear to 3 pins, 6 pairs, hidden layer 6. 6. One shared 32-word program memory. 7. Single EM. 8. Drop the Ear; the EM, monitors and recorder are still a complete, novel entry. Never cut: the ISS, the prover, the verification stack, the FPGA proof.
@@ -325,7 +326,7 @@ Eight facts this spec assumes but has not verified; each changes a number above,
 - [ ] Maximum core clock and pin toggle rate on the CMOS5L Tiny Tapeout board: decides 50 MHz vs 24 MHz and whether low-speed USB is claimable (organisers, 9 Oct 2026: there is no target clock, so pick one that closes timing after place-and-route; CMOS5L has no silicon back yet and no characterised pad numbers, and Tiny Tapeout is checking for SG13G2 figures)
 - [ ] Logic level of the board's I/O (assumed 3.3 V) and whether uio pins can be tri-stated per pin at runtime, which open-drain mode needs
 - [x] SRAM macro sizes and area on CMOS5L, from the template and the ttihp0p2 SRAM example: feeds the SRAM rule in section 8 (answered 23 Sep: stay with flops, section 8)
-- [ ] Whether the 8x4 tile option is confirmed, and by when: decides the third EM vs 64-word memory choice (organisers, 9 Oct 2026: 8x4 is the planned maximum; the template is expected around mid-October; design to 6x4 until then)
+- [ ] Whether the 8x4 tile option is confirmed, and by when: decides the third EM vs 64-word memory choice (organisers, 9 Oct 2026: 8x4 is the planned maximum; the template is expected around mid-October; design to 6x4 until then. 31 Oct 2026: Tiny Tapeout's support tools for CMOS5L already list an 8x4 tile, 1724.16 x 710.64 um against 1289.28 x 710.64 um for 6x4, 34% more area, with its power-grid DEF; no announcement yet, so the design stays at 6x4)
 - [x] SRAM macros on the CMOS5L shuttle (organisers, 9 Oct 2026: allowed, more than one, if they fit and pass precheck; powered on Metal4 per the walkthrough in section 8)
 - [ ] Whether the dont_use clock-gate cell may be instantiated (section 8)
 - [x] Which flow version the cmos5l template branch runs (LibreLane or OpenLane) and whether the GDS GitHub Action works on a fork today (LibreLane 3.1.0.dev3; the GDS, precheck and gate-level jobs pass on this repo)

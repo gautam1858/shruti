@@ -192,6 +192,23 @@ def test_bottom_row_builds():
     assert slave.transactions == [[0xA0, 0x42]]
 
 
+def test_two_protocols_at_once():
+    """EM0 runs the SPI master on the top Pmod row while EM1 runs the I2C master at 400 kHz on
+    the bottom row; both transfers complete, overlapping in time, with no flag raised."""
+    spi = SpiSlave(SCK, MOSI, MISO, CS, responses=[0x11, 0x22, 0x33])
+    i2c = I2cSlave(6, 7, address=0x50)
+    sim = Sim([fw.load("spi_master"), fw.load("i2c_master", FAST=1, ROW=1)], P=[50, 82],
+              cfg=[{}, I2C_CFG], devices=[spi, i2c],
+              host_tx=[[(0, b) for b in (0xA5, 0x3C, 0x0F)], [(0, b) for b in (0xA0, 0x42)]])
+    res = sim.run(10_000)
+    assert spi.received == [0xA5, 0x3C, 0x0F] and res.host_rx[0] == [0x11, 0x22, 0x33]
+    assert i2c.transactions == [[0xA0, 0x42]] and i2c.errors == []
+    spi_edges = [c for c, v in res.pin_trace(SCK)]
+    scl_edges = [c for c, v in res.pin_trace(6)]
+    assert spi_edges[0] < scl_edges[-1] and scl_edges[0] < spi_edges[-1]   # they overlap
+    assert not any(em.LATE or em.OVF or em.UNF for em in res.ems)
+
+
 # -- SPI master ---------------------------------------------------------------------------
 
 CS, MOSI, MISO, SCK = 0, 1, 2, 3
