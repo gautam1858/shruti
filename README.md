@@ -2,9 +2,9 @@
 
 # Shruti: an event-native protocol emulator ASIC that also listens
 
-Shruti (Sanskrit: "that which is heard") is an open-source protocol emulator chip for Tiny Tapeout (IHP 130nm CMOS5L, 6x4 tiles), built for the [Jane Street protocol emulator ASIC competition](https://blog.janestreet.com/protocol-emulator-asic-competition/). It speaks UART, SPI and I2C from firmware, and it listens: an on-die ternary classifier names a bus it was trained on from its edge timing, says when it is confident, and can be retrained after fabrication.
+Shruti (Sanskrit: "that which is heard") is an open-source protocol emulator chip for Tiny Tapeout (IHP 130nm CMOS5L, 8x4 tiles), built for the [Jane Street protocol emulator ASIC competition](https://blog.janestreet.com/protocol-emulator-asic-competition/). It speaks UART, SPI and I2C from firmware, and it listens: an on-die ternary classifier names a bus it was trained on from its edge timing, says when it is confident, and can be retrained after fabrication.
 
-**Target** Tiny Tapeout 6x4, IHP 130nm CMOS5L · **Clock** 50 MHz (40 or 60 MHz if Ethernet is attempted), 24 MHz fallback · **Logic** 27,789 cells and 4,396 flip-flops synthesised, 68.6% placed utilisation, timing met at 50 MHz (commit fcafc0b; Watch not yet in), flip-flops only · **Submission** 12 Jan 2027 for the 18 Jan deadline · **Licence** Apache-2.0
+**Target** Tiny Tapeout 8x4, IHP 130nm CMOS5L · **Clock** 50 MHz (40 or 60 MHz if Ethernet is attempted), 24 MHz fallback · **Logic** 27,789 cells and 4,396 flip-flops synthesised, 68.6% placed utilisation at 6x4, timing met at 50 MHz (commit fcafc0b; Watch not yet in; the first 8x4 run is pending), flip-flops only · **Submission** 12 Jan 2027 for the 18 Jan deadline · **Licence** Apache-2.0
 
 Full design: [docs/architecture-spec.md](docs/architecture-spec.md).
 

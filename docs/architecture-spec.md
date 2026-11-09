@@ -24,7 +24,7 @@ Every stated requirement in the [Jane Street brief](https://blog.janestreet.com/
 | JTAG, SWD, PS/2, CAN | Firmware, after the core three; CAN needs an external transceiver and a wait-with-timeout for arbitration |
 | Test RTL on an FPGA before the ASIC flow | Tang Nano 20K prototype from week 6; same RTL, same firmware. Status, 8 Oct 2026: not started |
 | Novel design and verification methodology | Proof-carrying firmware, every protocol program proven against its contract before it can be loaded (section 10); golden-model differential testing, formal proofs on the scheduler, and a bit-exact formal equivalence proof of the on-die classifier (section 9). Status, 10 Oct 2026: four programs carry proofs (the SPI slave and the I2C target do not yet) and `shruti load` is not built; the Event Machine's scheduler, FIFO, PC and HALT properties are proved (verify/README.md); the classifier proof is planned for 13 Dec |
-| IHP 130nm CMOS5L, Tiny Tapeout template, 6x4 tiles | Budget in section 8 targets 60% utilisation of 24 tiles; an 8x4 grant adds a third EM or doubles program memory |
+| IHP 130nm CMOS5L, Tiny Tapeout template, 8x4 tiles (confirmed by the organisers in November 2026; designed at 6x4 until then) | Budget in section 8 targets 60% utilisation; the area 8x4 adds goes to a third EM, 64-word program memory or full-size Watch, decided on the first 8x4 run |
 | Open source | Apache-2.0 for RTL, firmware, models and the training pipeline; public repo from day one |
 | Teams recommended | Planned as two roles (microarchitecture + physical design; ISA, toolchain, Ear, verification and write-up); decided 23 Sep 2026 to proceed solo, with the no-partner fallback in section 14 |
 | Deadline 18 Jan 2027, March 2027 shuttle | Feature freeze 20 Dec 2026, submission 12 Jan 2027 (section 15) |
@@ -207,7 +207,7 @@ Signoff gate, 8 Oct 2026. The GDS workflow now has a signoff job (verify/signoff
 - 0 DRC and 0 antenna violations.
 They warn on the hold margin and on 10 max-slew, 1 max-cap and 308 max-fanout violations, the electrical items left for signoff.
 
-If the 8x4 grant arrives: add a third EM (2,400 cells) or double program memory to 64 words per EM (1,600 cells), not both, and keep utilisation under 65%.
+8x4 is confirmed (organisers, November 2026): the die grows from 1,289.3 x 710.6 um to 1,724.2 x 710.6 um, 34% more. The design moves to 8x4 as it is, and the extra area is decided on the first 8x4 run's utilisation and timing: a third EM (2,400 cells), 64-word program memory per EM (1,600 cells; an ISA change, since JMP needs a 6-bit target), or Watch at full size (4 monitors, a 32-entry recorder), keeping utilisation under 65%.
 
 ## Verification methodology
 
@@ -324,7 +324,7 @@ Eight facts this spec assumes but has not verified; each changes a number above,
 - [ ] Maximum core clock and pin toggle rate on the CMOS5L Tiny Tapeout board: decides 50 MHz vs 24 MHz and whether low-speed USB is claimable (organisers, 9 Oct 2026: there is no target clock, so pick one that closes timing after place-and-route; CMOS5L has no silicon back yet and no characterised pad numbers, and Tiny Tapeout is checking for SG13G2 figures)
 - [ ] Logic level of the board's I/O (assumed 3.3 V) and whether uio pins can be tri-stated per pin at runtime, which open-drain mode needs
 - [x] SRAM macro sizes and area on CMOS5L, from the template and the ttihp0p2 SRAM example: feeds the SRAM rule in section 8 (answered 23 Sep: stay with flops, section 8)
-- [ ] Whether the 8x4 tile option is confirmed, and by when: decides the third EM vs 64-word memory choice (organisers, 9 Oct 2026: 8x4 is the planned maximum; the template is expected around mid-October; design to 6x4 until then. 31 Oct 2026: Tiny Tapeout's support tools for CMOS5L already list an 8x4 tile, 1724.16 x 710.64 um against 1289.28 x 710.64 um for 6x4, 34% more area, with its power-grid DEF; no announcement yet, so the design stays at 6x4)
+- [x] Whether the 8x4 tile option is confirmed, and by when: decides the third EM vs 64-word memory choice (organisers, November 2026: 8x4 is confirmed for the March 2027 CMOS5L shuttle, tile sizes are final, and the template's main branch targets CMOS5L; the choice is made on the first 8x4 run)
 - [x] SRAM macros on the CMOS5L shuttle (organisers, 9 Oct 2026: allowed, more than one, if they fit and pass precheck; powered on Metal4 per the walkthrough in section 8)
 - [ ] Whether the dont_use clock-gate cell may be instantiated (section 8)
 - [x] Which flow version the cmos5l template branch runs (LibreLane or OpenLane) and whether the GDS GitHub Action works on a fork today (LibreLane 3.1.0.dev3; the GDS, precheck and gate-level jobs pass on this repo)

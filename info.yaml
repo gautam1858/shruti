@@ -7,8 +7,9 @@ project:
   language:     "Verilog"
   clock_hz:     50000000
 
-  # Jane Street protocol emulator ASIC competition allocation (see the competition brief).
-  tiles: "6x4"
+  # Jane Street protocol emulator ASIC competition allocation: 8x4, confirmed for the March 2027
+  # CMOS5L shuttle (organisers, Nov 2026).
+  tiles: "8x4"
 
   # Your top module name must start with "tt_um_". Make it unique by including your github username:
   top_module:  "tt_um_gautam1858_shruti"
