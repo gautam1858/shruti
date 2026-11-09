@@ -21,7 +21,7 @@ def main(argv=None) -> int:
     p.add_argument("--min-P", action="store_true",
                    help="also report the smallest P for which the contract holds")
     t = sub.add_parser("train", help="train the Ear classifier on simulated buses")
-    t.add_argument("--captures", type=int, default=150, help="captures per class")
+    t.add_argument("--captures", type=int, default=400, help="captures per class")
     t.add_argument("--seed", type=int, default=1)
     t.add_argument("--out", default="ear/weights/default", help="output stem (.hex, .json)")
     t.add_argument("--report", default="ear/REPORT.md")

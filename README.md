@@ -76,7 +76,7 @@ Every line names its evidence; the GitHub Actions in `.github/workflows` run all
 - **Assembler and disassembler** (`asm/`): round trip over all 65,536 words; conditional assembly and `-D` overrides, so one source builds every SPI mode.
 - **Firmware** (`fw/`), on Tiny Tapeout's recommended Pmod pinouts (either row): UART transmit and receive at every common baud rate from 300 to 3 Mbaud, SPI master and slave in each of modes 0-3, I2C master at 100 and 400 kHz, and an I2C target that receives writes (the host answers each ACK), each tested on the ISS against a model of the peer device, with injected faults (`fw/tests`). Controller and target roles both exist for SPI and I2C, and two protocols run at once, one per EM and Pmod row (`test_two_protocols_at_once`).
 - **Proofs** (`prove/`, `python -m shruti prove`): UART transmit (any number of frames), UART receive, SPI master (each of modes 0-3) and I2C master (standard and fast builds) against their contracts, with counterexamples replayed on the ISS.
-- **Ear training and evaluation** (`ear/`): the bit-exact reference, the protocol simulator, a trained model (86.6% test accuracy on simulated buses, 99.5% when confident) and its evaluation in `ear/REPORT.md` (coverage by speed, foreign signals, held-out classes, float against integer; `ear/evaluate.py`).
+- **Ear training and evaluation** (`ear/`): the bit-exact reference, the protocol simulator, a trained model (92.8% test accuracy on simulated buses, UART recall 75%, 99.0% right when confident) and its evaluation in `ear/REPORT.md` (coverage by speed, foreign signals, held-out classes, float against integer; `ear/evaluate.py`).
 
 ### Planned
 
@@ -92,10 +92,11 @@ Dates from the spec's milestones:
 ### Known limitations
 
 On simulated buses with the shipped weights (`ear/REPORT.md`):
-- **Slow buses get no answer.** A window closes after 65,536 cycles (1.3 ms), so a UART at 19,200 baud or slower has at most about 11 edges per window and 96-100% of its windows are flagged; PS/2 is answered on 34-39% of windows.
-- **Fast UARTs are called CAN.** From 115,200 baud up, 84-95% of answered UART windows are classified CAN, the 0-3% that are confident are all wrong, and no UART window at any speed is confidently right.
-- **The out-of-distribution flag misses foreign traffic.** A 20 kHz PWM, WS2812 LED data and random edges on four pins are flagged on 0% of windows and called CAN, Manchester and JTAG/SWD; read the class only with the confident flag, which fired on none of them except WS2812 with the unused pins idle low (6%).
-- **Held-out protocols are not flagged either.** A model trained without JTAG/SWD and PS/2 flags none of their windows; it abstains on every PS/2 window but confidently calls 43% of JTAG/SWD windows SPI.
+- **Slow buses get no answer.** A window closes after 65,536 cycles (1.3 ms), so a UART at 19,200 baud or slower has at most about 11 edges per window and 95-100% of its windows are flagged; PS/2 is answered on 34-39% of windows.
+- **UART is answered but rarely confident.** From 38,400 to 460,800 baud, 86-94% of answered UART windows are right, but at most 2% are confident; at 1 Mbaud 62% are called CAN.
+- **Some fast windows are confidently wrong.** At 6.25 Mbit/s, Manchester windows are confident 90% of the time and right on 45% of those (CAN 38%).
+- **Foreign traffic is neither flagged nor abstained on.** A 20 kHz PWM, WS2812 LED data and random edges on four pins are flagged on 0% of windows, and the confident flag fires on 100%, 20-100% and 95% of them (as CAN, Manchester and JTAG/SWD). The first model abstained on almost all of these; the more accurate one does not, so "answers only when confident" does not hold for traffic the Ear was not trained on.
+- **Held-out protocols are not flagged either.** A model trained without JTAG/SWD and PS/2 flags at most 2% of their windows and confidently calls 68% of JTAG/SWD windows another protocol and 60% of PS/2 windows UART.
 
 ## Repository layout
 

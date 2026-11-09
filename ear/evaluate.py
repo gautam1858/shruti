@@ -61,6 +61,7 @@ SPEEDS: Dict[str, List[Tuple[str, dict]]] = {
                     ("6.25 Mbit/s", 8))],
 }
 DURATION = 1_500_000                       # 30 ms per capture, as dataset.build gives UART
+TRAIN_CAPTURES = 400                       # captures per class of the shipped model's dataset
 
 
 def shipped() -> Model:
@@ -220,7 +221,7 @@ class HeldOut:
     prototype: List[Tuple[int, float, Dict[str, float]]]       # percentile, false alarms, flagged
 
 
-def held_out(captures: int = 150, seed: int = 1, unknown_captures: int = 50,
+def held_out(captures: int = TRAIN_CAPTURES, seed: int = 1, unknown_captures: int = 50,
              tc: TrainConfig = TrainConfig()) -> HeldOut:
     ds = build(captures, seed, KNOWN6)
     model, report = train(captures, seed, KNOWN6, tc, unknown=UNKNOWN2, ds=ds)
@@ -306,10 +307,10 @@ def float_mlp(Xtr: np.ndarray, ytr: np.ndarray, Xva: np.ndarray, yva: np.ndarray
     return lambda X: np.argmax(fwd(W, (X - mu) / sd)[2], axis=1)
 
 
-def float_gap(model: Model, captures: int = 150, seed: int = 1,
+def float_gap(model: Model, captures: int = TRAIN_CAPTURES, seed: int = 1,
               sizes: Sequence[int] = (8, 12, 16, 32), epochs: int = 3000
               ) -> List[Tuple[str, float, float]]:
-    """Accuracy and UART recall on the shipped model's own test split (build(150, 1), split
+    """Accuracy and UART recall on the shipped model's own test split (build(400, 1), split
     by capture 70/15/15), for float networks trained on its training split."""
     ds = build(captures, seed)
     (Xtr, ytr, _), (Xva, yva, _), (Xte, yte, _) = split(ds, seed)
@@ -333,7 +334,7 @@ def _pct(v: float) -> str:
 
 
 def markdown(cov, prb, ho: Optional[HeldOut], gap, duration: int = DURATION,
-             captures: int = 20, gap_captures: int = 150) -> str:
+             captures: int = 20, gap_captures: int = TRAIN_CAPTURES) -> str:
     L = [MARKER, "", "## Coverage by speed",
          "",
          f"Every class at fixed speeds across the range the protocol simulator covers, "

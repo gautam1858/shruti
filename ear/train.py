@@ -1,12 +1,21 @@
-"""Training for the Ear's ternary classifier (numpy), export to the 1,280-bit weight chain,
+"""Training for the Ear's ternary classifier (numpy), export to the 1,344-bit weight chain,
 and evaluation of the exact integer model.
 
-Training is quantisation-aware: the forward pass uses ternary weights (threshold 0.7 x mean
-|w| per layer, as in ternary weight networks) with a straight-through gradient to the float
-weights, and a threshold per hidden unit. It starts from a float network trained the same
-way. After training, the requantisation shift is chosen on the validation set using the exact
-integer model from ear.mlp, and every reported number comes from that integer model, not from
-the float network.
+The recipe, per restart:
+1. Quantisation-aware training: the forward pass uses ternary weights (threshold 0.7 x mean
+   |w| per layer, as in ternary weight networks) with a straight-through gradient to the
+   float weights, and a threshold per hidden unit. It starts from a float network trained the
+   same way.
+2. The requantisation shift is chosen on the validation set with the exact integer model.
+3. Exact search (`refine`): the integer model itself, as ear.mlp defines it, is improved one
+   weight or threshold at a time, keeping a change only if it lowers the class-balanced
+   cross-entropy of the integer logits on the training set. Gradient training stalls well
+   short of what the ternary network can fit (84-90% on its own training data); the search
+   optimises the model the hardware runs, so nothing is lost at export.
+The restart with the best balanced validation accuracy (mean recall over classes) is kept.
+MARGIN is the smallest margin at which the confident windows are at least 99% right on the
+validation set. Every reported number comes from the integer model, never from the float
+network.
 """
 
 from __future__ import annotations
@@ -51,6 +60,8 @@ class TrainConfig:
     lr: float = 0.005
     restarts: int = 4
     seed: int = 0
+    sweeps: int = 60                    # exact-search sweeps per restart (0: no search)
+    precision: float = 0.99             # MARGIN target: precision of confident windows
 
 
 def _scaled(w: np.ndarray) -> Tuple[np.ndarray, float]:
@@ -125,6 +136,107 @@ def predict(logits: np.ndarray) -> np.ndarray:
     return np.argmax(logits, axis=1)               # numpy picks the lowest index on ties
 
 
+def _class_weights(y: np.ndarray) -> np.ndarray:
+    counts = np.bincount(y, minlength=CLASSES_N).astype(float)
+    present = counts > 0
+    w = np.where(present, counts.sum() / np.maximum(counts, 1) / present.sum(), 0.0)
+    return w[y]
+
+
+def _xent(Z: np.ndarray, y: np.ndarray, tau: float, sw: np.ndarray) -> float:
+    """Class-balanced cross-entropy of the integer logits Z scaled by tau."""
+    a = tau * Z
+    m = a.max(axis=1)
+    lse = m + np.log(np.exp(a - m[:, None]).sum(axis=1))
+    return float(np.sum((lse - a[np.arange(len(y)), y]) * sw) / len(y))
+
+
+def _fit_tau(Z: np.ndarray, y: np.ndarray, sw: np.ndarray) -> float:
+    """The logit scale that minimises the loss (it does not change any prediction)."""
+    taus = np.exp(np.linspace(np.log(1e-3), np.log(2.0), 40))
+    return float(min(taus, key=lambda t: _xent(Z, y, t, sw)))
+
+
+def refine(T1: np.ndarray, T2: np.ndarray, bias: np.ndarray, shift: int, X: np.ndarray,
+           y: np.ndarray, sweeps: int = 60, seed: int = 0
+           ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Exact search on the integer model: in each sweep, visit every weight (moved to each
+    other ternary value) and every threshold (moved by 1, 2, 4 or 8, within 8 signed bits)
+    in a random order, and keep a move if it lowers the class-balanced cross-entropy of the
+    integer logits on (X, y). The logit scale is refitted after each sweep. Stops when a
+    sweep keeps nothing. The training loss never rises, and the result is a valid model."""
+    rng = np.random.default_rng(seed)
+    T1, T2, b = T1.astype(np.int64).copy(), T2.astype(np.int64).copy(), bias.astype(np.int64).copy()
+    X = X.astype(np.int64)
+    sw = _class_weights(y)
+    A = X @ T1.T + b                               # accumulators, then hidden units, logits
+    H = np.minimum(255, np.maximum(A, 0) >> shift)
+    Z = H @ T2.T
+    tau = _fit_tau(Z, y, sw)
+    L = _xent(Z, y, tau, sw)
+    moves = ([(0, j, i) for j in range(HIDDEN) for i in range(N_IN)]
+             + [(1, k, j) for k in range(CLASSES_N) for j in range(HIDDEN)]
+             + [(2, j, d) for j in range(HIDDEN) for d in (-8, -4, -2, -1, 1, 2, 4, 8)])
+
+    def hidden_move(j, Aj):
+        Hj = np.minimum(255, np.maximum(Aj, 0) >> shift)
+        dH = Hj - H[:, j]
+        if not dH.any():
+            return None
+        Z2 = Z + np.outer(dH, T2[:, j])
+        return Hj, Z2, _xent(Z2, y, tau, sw)
+
+    for _ in range(sweeps):
+        kept = 0
+        for n in rng.permutation(len(moves)):
+            kind, p, q = moves[n]
+            if kind == 0:                          # W1[p][q]
+                old = T1[p, q]
+                for new in (-1, 0, 1):
+                    if new == old:
+                        continue
+                    Aj = A[:, p] + (new - old) * X[:, q]
+                    r = hidden_move(p, Aj)
+                    if r and r[2] < L - 1e-12:
+                        T1[p, q] = new
+                        A[:, p], H[:, p], Z, L = Aj, r[0], r[1], r[2]
+                        kept += 1
+                        break
+            elif kind == 1:                        # W2[p][q]
+                old = T2[p, q]
+                for new in (-1, 0, 1):
+                    if new == old:
+                        continue
+                    Z2 = Z.copy()
+                    Z2[:, p] += (new - old) * H[:, q]
+                    L2 = _xent(Z2, y, tau, sw)
+                    if L2 < L - 1e-12:
+                        T2[p, q] = new
+                        Z, L = Z2, L2
+                        kept += 1
+                        break
+            else:                                  # threshold B[p] += q
+                nb = int(np.clip(b[p] + q, -128, 127))
+                if nb == b[p]:
+                    continue
+                Aj = A[:, p] + (nb - b[p])
+                r = hidden_move(p, Aj)
+                if r and r[2] < L - 1e-12:
+                    b[p] = nb
+                    A[:, p], H[:, p], Z, L = Aj, r[0], r[1], r[2]
+                    kept += 1
+        tau = _fit_tau(Z, y, sw)
+        L = _xent(Z, y, tau, sw)
+        if kept == 0:
+            break
+    return T1, T2, b
+
+
+def balanced_accuracy(pred: np.ndarray, y: np.ndarray) -> float:
+    """Mean recall over the classes present in y."""
+    return float(np.mean([np.mean(pred[y == k] == k) for k in np.unique(y)]))
+
+
 def _best_shift(T1, T2, bias, X, y) -> Tuple[int, float]:
     scores = [(np.mean(predict(int_logits(T1, T2, X, s, bias)) == y), -s, s) for s in range(16)]
     acc, _, s = max(scores)
@@ -132,16 +244,22 @@ def _best_shift(T1, T2, bias, X, y) -> Tuple[int, float]:
 
 
 def calibrate(logits: np.ndarray, y: np.ndarray, edges: np.ndarray,
-              false_alarm: float = 0.05) -> Tuple[int, int]:
-    """MARGIN: the median margin of correct predictions (so about half of them are marked
-    confident, the other half not, on validation data). FLOOR: the false_alarm quantile of
-    the best logit on known classes."""
+              false_alarm: float = 0.05, precision: float = 0.99) -> Tuple[int, int]:
+    """MARGIN: the smallest margin (0..255) at which the windows marked confident are at
+    least `precision` right on validation data (255 if none is). FLOOR: the false_alarm
+    quantile of the best logit on known classes."""
     srt = np.sort(logits, axis=1)
     best, second = srt[:, -1], srt[:, -2]
+    gap = best - second
     correct = predict(logits) == y
-    margin = int(np.median((best - second)[correct])) if correct.any() else 0
+    margin = 255
+    for m in range(256):
+        conf = gap >= m
+        if conf.any() and np.mean(correct[conf]) >= precision:
+            margin = m
+            break
     floor = int(np.floor(np.quantile(best, false_alarm)))
-    return max(0, min(255, margin)), max(-2048, min(2047, floor))
+    return margin, max(-2048, min(2047, floor))
 
 
 @dataclass
@@ -160,6 +278,8 @@ class Report:
     confident_accuracy: float
     ood_known: float                               # OOD flag rate on trained classes
     ood_unknown: Optional[float] = None            # OOD flag rate on held-out classes
+    recall: Optional[Dict[str, float]] = None      # per trained class, on the test set
+    balanced_accuracy: Optional[float] = None      # mean of recall, on the test set
 
 
 def train(captures_per_class: int = 60, seed: int = 1, classes: Sequence[str] = ps.CLASSES,
@@ -173,11 +293,16 @@ def train(captures_per_class: int = 60, seed: int = 1, classes: Sequence[str] = 
     best = None
     for r in range(tc.restarts):
         T1, T2, bias = _train_float(Xtr, ytr, cls_idx, tc, tc.seed + r)
-        s, acc = _best_shift(T1, T2, bias, Xva, yva)
-        if best is None or acc > best[0]:
-            best = (acc, T1, T2, bias, s)
-    val_acc, T1, T2, bias, shift = best
-    margin, floor = calibrate(int_logits(T1, T2, Xva, shift, bias), yva, eva)
+        s, _ = _best_shift(T1, T2, bias, Xva, yva)
+        if tc.sweeps:
+            T1, T2, bias = refine(T1, T2, bias, s, Xtr, ytr, tc.sweeps, tc.seed + r)
+        pv = predict(int_logits(T1, T2, Xva, s, bias))
+        bal = balanced_accuracy(pv, yva)
+        if best is None or bal > best[0]:
+            best = (bal, float(np.mean(pv == yva)), T1, T2, bias, s)
+    _, val_acc, T1, T2, bias, shift = best
+    margin, floor = calibrate(int_logits(T1, T2, Xva, shift, bias), yva, eva,
+                              precision=tc.precision)
     model = Model(T1.tolist(), T2.tolist(), Config(shift, margin, floor, MIN_EDGES),
                   [int(b) for b in bias])
 
@@ -202,7 +327,11 @@ def train(captures_per_class: int = 60, seed: int = 1, classes: Sequence[str] = 
         confusion=conf.tolist(), confident_rate=round(float(np.mean(confident)), 4),
         confident_accuracy=round(float(np.mean((pred == yte)[confident])) if confident.any() else 0.0, 4),
         ood_known=round(float(np.mean(ood)), 4),
-        ood_unknown=None if ood_unknown is None else round(ood_unknown, 4))
+        ood_unknown=None if ood_unknown is None else round(ood_unknown, 4),
+        recall={c: round(float(np.mean(pred[yte == ps.CLASSES.index(c)]
+                                       == ps.CLASSES.index(c))), 4)
+                for c in classes if np.any(yte == ps.CLASSES.index(c))},
+        balanced_accuracy=round(balanced_accuracy(pred, yte), 4))
     return model, report
 
 
@@ -223,14 +352,20 @@ def report_markdown(r: Report, title: str) -> str:
     lines = [f"## {title}", "",
              f"Trained on: {', '.join(r.trained_classes)}. Windows per class: "
              + ", ".join(f"{k} {v}" for k, v in r.windows.items()) + ".", "",
-             f"- Integer model accuracy: validation {r.val_accuracy:.1%}, test {r.test_accuracy:.1%}",
+             f"- Integer model accuracy: validation {r.val_accuracy:.1%}, test {r.test_accuracy:.1%}"
+             + (f" (balanced: {r.balanced_accuracy:.1%})" if r.balanced_accuracy is not None
+                else ""),
              f"- Configuration: SHIFT {r.shift}, MARGIN {r.margin}, FLOOR {r.floor}, "
              f"MIN_EDGES {r.min_edges}",
              f"- Confident on {r.confident_rate:.1%} of test windows; accuracy when confident "
-             f"{r.confident_accuracy:.1%}",
+             f"{r.confident_accuracy:.1%} (MARGIN is the smallest margin giving 99% on "
+             f"validation)",
              f"- OOD flag rate on trained classes (false alarms): {r.ood_known:.1%}"]
     if r.ood_unknown is not None:
         lines.append(f"- OOD flag rate on classes held out of training: {r.ood_unknown:.1%}")
+    if r.recall:
+        lines.append("- Recall per class (test): "
+                     + ", ".join(f"{c} {v:.0%}" for c, v in r.recall.items()))
     rows = [i for i, n in enumerate(names) if n in r.trained_classes]
     lines += ["", "Confusion matrix on the test set (rows: true class, columns: predicted):", "",
               "| | " + " | ".join(names) + " |", "|---" * (len(names) + 1) + "|"]
