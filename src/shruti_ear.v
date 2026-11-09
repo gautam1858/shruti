@@ -64,18 +64,24 @@ module shruti_ear (
   reg [11:0] floor_;
   reg [8:0]  min_edges;
   reg [63:0] thr;                    // B[0..7], signed bytes
+  reg [1:0]  psel;                   // EAR_CFG: prescaler 1, 4, 16 or 64 cycles per tick
 
   // ------------------------------------------------------------------ window state
   localparam S_RUN = 2'd0, S_PAUSE = 2'd1, S_HELD = 2'd2;
   reg [1:0]  state;
   reg [9:0]  p;                      // pause cycle
-  reg [16:0] wlen;                   // cycles of this window before the current one;
-                                     // during the pause, the window's length
+  reg [16:0] wlen;                   // ticks of this window that ended before this cycle;
+                                     // during the pause, the window's length in ticks
+  reg [5:0]  pre;                    // cycle within the tick, from the window's first cycle
   reg [8:0]  nedges;                 // edges this window (saturates at 511)
   reg [7:0]  nwin;                   // windows classified (wraps)
   reg        valid;
 
   wire counting = en && state == S_RUN;
+  // A tick is P cycles, counted from the window's first cycle; this cycle ends one when the
+  // prescaler reaches P - 1 (always, for P = 1). Window times count ticks (ear/SPEC.md).
+  wire [5:0] pmask = psel == 2'd0 ? 6'd0 : psel == 2'd1 ? 6'd3 : psel == 2'd2 ? 6'd15 : 6'd63;
+  wire       tick  = pre == pmask;
   wire clear_now = (state == S_PAUSE) ? (p == 10'd647 && (!en || !hold))
                                       : (!en || (state == S_HELD && !hold));
 
@@ -233,7 +239,8 @@ module shruti_ear (
       if (clear_now) begin
         nx_since = 16'd0; nx_min_h = 5'd0; nx_min_c = 6'd63; nx_max_c = 6'd0;
       end else if (counting) begin
-        nx_since = edg[pq] ? 16'd1 : (since[pq] == 16'hFFFF) ? 16'hFFFF : since[pq] + 16'd1;
+        nx_since = edg[pq] ? {15'd0, tick}
+                           : (since[pq] == 16'hFFFF) ? 16'hFFFF : since[pq] + {15'd0, tick};
         nx_min_h = n_min_h[pq]; nx_min_c = n_min_c[pq]; nx_max_c = n_max_c[pq];
       end else begin
         nx_since = since[pq]; nx_min_h = min_h[pq]; nx_min_c = min_c[pq]; nx_max_c = max_c[pq];
@@ -254,7 +261,7 @@ module shruti_ear (
   // edges this cycle and the closing condition
   wire [2:0] nnow   = {2'd0, edg[0]} + {2'd0, edg[1]} + {2'd0, edg[2]} + {2'd0, edg[3]};
   wire [9:0] ecount = {1'b0, nedges} + {7'd0, nnow};
-  wire       close  = counting && (ecount >= 10'd256 || wlen == 17'h0FFFF);
+  wire       close  = counting && (ecount >= 10'd256 || (wlen == 17'h0FFFF && tick));
 
   // ------------------------------------------------------------------ canonical rank (p = 4)
   wire [5:0] fe   [0:3];             // edge feature: saturated 8-bit count, top 6 bits
@@ -399,6 +406,7 @@ module shruti_ear (
       8'hBF:   rdata = nedges[8] ? 8'hFF : nedges[7:0];
       8'hC0, 8'hC1, 8'hC2, 8'hC3, 8'hC4, 8'hC5, 8'hC6, 8'hC7:
                rdata = thr[8*raddr[2:0] +: 8];
+      8'hC8:   rdata = {6'd0, psel};
       default: rdata = 8'd0;
     endcase
   end
@@ -408,7 +416,7 @@ module shruti_ear (
   always @(posedge clk) begin
     if (!rst_n) begin
       en <= 1'b0; hold <= 1'b0; sel <= 16'h3210; shift <= 4'd4; margin <= 8'd8;
-      floor_ <= 12'd0; min_edges <= 9'd24; thr <= 64'd0;
+      floor_ <= 12'd0; min_edges <= 9'd24; thr <= 64'd0; psel <= 2'd0; pre <= 6'd0;
       state <= S_RUN; p <= 10'd0; wlen <= 17'd0; nedges <= 9'd0; nwin <= 8'd0; valid <= 1'b0;
       cls <= 3'd0; conf <= 1'b0; ood <= 1'b0; shown <= 3'd0;
       ord <= 8'b11_10_01_00;
@@ -447,6 +455,7 @@ module shruti_ear (
         endcase
       end
       if (wr && waddr[7:3] == 5'b11000) thr[8*waddr[2:0] +: 8] <= wdata;
+      if (wr && waddr == 8'hC8) psel <= wdata[1:0];
       if (rtake && raddr == 8'hBE) begin
         hft <= (hft == 4'd11) ? 4'd0 : hft + 4'd1;
         if (hft == 4'd11) hfs <= (hfs == 3'd5) ? 3'd0 : hfs + 3'd1;
@@ -460,7 +469,7 @@ module shruti_ear (
       end
       if (clear_now) begin
         // cleared: the next window starts in the next cycle the Ear is enabled
-        state <= S_RUN; wlen <= 17'd0; nedges <= 9'd0;
+        state <= S_RUN; wlen <= 17'd0; nedges <= 9'd0; pre <= 6'd0;
         for (r = 0; r < 4; r = r + 1) begin
           hist[r] <= 48'd0; min_h[r] <= 5'd0; has_min[r] <= 1'b0; min_c[r] <= 6'd63;
           max_c[r] <= 6'd0; nedg[r] <= 8'd0; high[r] <= 17'd0; since[r] <= 16'd0;
@@ -472,18 +481,19 @@ module shruti_ear (
       end else if (state == S_PAUSE && p == 10'd647) begin
         state <= S_HELD;
       end else if (counting) begin
-        wlen <= wlen + 17'd1;           // counts the closing cycle too: length in the pause
+        wlen <= wlen + {16'd0, tick};   // counts the closing cycle too: length in the pause
+        pre  <= tick ? 6'd0 : pre + 6'd1;
         nedges <= ecount[9] ? 9'h1FF : ecount[8:0];
         for (r = 0; r < 4; r = r + 1) begin
           hist[r] <= n_hist[r]; min_h[r] <= n_min_h[r]; has_min[r] <= n_has_min[r];
           min_c[r] <= n_min_c[r]; max_c[r] <= n_max_c[r];
-          high[r] <= high[r] + {16'd0, lvl[r]};
+          high[r] <= high[r] + {16'd0, lvl[r] & tick};
           if (edg[r]) begin
             nedg[r] <= (nedg[r] == 8'hFF) ? 8'hFF : nedg[r] + 8'd1;
-            since[r] <= 16'd1;
+            since[r] <= {15'd0, tick};
             has_last[r] <= 1'b1;
           end else begin
-            since[r] <= (since[r] == 16'hFFFF) ? 16'hFFFF : since[r] + 16'd1;
+            since[r] <= (since[r] == 16'hFFFF) ? 16'hFFFF : since[r] + {15'd0, tick};
           end
         end
         for (sa = 0; sa < 4; sa = sa + 1)

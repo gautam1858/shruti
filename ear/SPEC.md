@@ -17,7 +17,7 @@ The Ear sees the same filtered pin levels as the Event Machines: the two-flop sy
 ## Windows
 
 - The host selects 4 of the 12 bus pins; "edges" below means filtered edges on those 4.
-- A window closes at the end of the cycle in which its edge count reaches 256, or after 65,536 cycles, whichever comes first.
+- A window closes at the end of the cycle in which its edge count reaches 256, or after 65,536 ticks, whichever comes first. A tick is one cycle unless the prescaler is set (below).
 - The features are then fixed and the classifier runs for 648 cycles (below). During those cycles the counters are paused and edges are not counted; pin levels are still tracked.
 - The next window starts on the following cycle, with every counter cleared and no previous edge remembered.
 
@@ -81,7 +81,15 @@ The class and flags change at the end of the last pause cycle. The Python model 
 
 **(resolved) Thresholds.** The spec's training step mentions "integer thresholds" without saying where they go. They are one 8-bit signed threshold per hidden unit, B[j]: the accumulator starts at B[j] instead of 0. That is 64 more configuration bits, and it made training more stable across restarts.
 
-**Host configuration:** the 4 pin selects, the filter mode, `SHIFT`, `MARGIN` (8-bit), `FLOOR` (12-bit signed) and `MIN_EDGES` (activity gate, 0..256).
+**Host configuration:** the 4 pin selects, the filter mode, `SHIFT`, `MARGIN` (8-bit), `FLOOR` (12-bit signed), `MIN_EDGES` (activity gate, 0..256) and the prescaler.
+
+## Prescaler
+
+**(new)** `EAR_CFG[1:0]` sets a tick of P = 1, 4, 16 or 64 cycles. Every time inside a window counts ticks: interval lengths, the near window (4 ticks), the time limit (65,536 ticks) and time-high, which counts the ticks whose last cycle has the pin high, over the window's length in whole ticks. Ticks start at the window's first cycle: tick n covers cycles w0 + nP to w0 + nP + P - 1. Edges are still detected, filtered and counted every cycle, so two edges on one pin in the same tick give an interval of 0, coded as 1. The 648-cycle pause is unchanged.
+
+A slow bus at P = 16 then gives the same features as the same bus 16 times faster at P = 1 (tested with every edge moved to the first cycle of its tick), so a 9,600-baud UART, which at P = 1 closes its windows by time with about 6 edges, fills them at P = 64. A window can never end with zero whole ticks: 4 pins make at most 4 edges a cycle, so 256 edges take at least 64 cycles.
+
+The RTL adds a 6-bit counter, cleared with the window, and gates the `since`, length and time-high counters with its tick. The host picks P.
 
 ## Weight chain
 

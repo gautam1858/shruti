@@ -25,6 +25,7 @@ CTRL, FLAGS, P_LO, P_HI, CFG_OUT, CFG_IN, TXPORT, RXPORT, RXCNT, PC = range(10)
 SYNC, FILTER, RELEASE, LEVELS, ID, VERSION, RUN_ALL = 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6
 EAR_CTRL, EAR_SEL, EAR_WEIGHTS, EAR_RESULT, EAR_BEST, EAR_NWIN, EAR_FEATURES, EAR_THR = (
     0xB0, 0xB1, 0xB9, 0xBA, 0xBB, 0xBD, 0xBE, 0xC0)
+EAR_CFG = 0xC8                      # prescaler: 0, 1, 2, 3 for 1, 4, 16, 64 cycles per tick
 
 # Cycles from the SCK rising edge of the last bit of a register write to the first cycle in
 # which the write is in effect (two synchroniser flops, edge detect, the write strobe).
@@ -157,8 +158,8 @@ class Chip:
         await self.write(EAR_CTRL, [1 | (2 if hold else 0)])
         return self.last_rise + WRITE_LATENCY
 
-    async def load_ear(self, model, sel=(0, 1, 2, 3)):
-        """Weights, thresholds and configuration from an ear.mlp.Model."""
+    async def load_ear(self, model, sel=(0, 1, 2, 3), prescale=1):
+        """Weights, thresholds and configuration from an ear.mlp.Model, and the prescaler."""
         data = model.to_bytes()
         await self.write(EAR_WEIGHTS, data[:160])
         await self.write(EAR_THR, data[160:])
@@ -166,6 +167,7 @@ class Chip:
         fl, me = c.floor & 0xFFF, c.min_edges
         await self.write(EAR_SEL, [sel[0] | sel[1] << 4, sel[2] | sel[3] << 4, c.shift, c.margin,
                                    fl & 0xFF, fl >> 8, me & 0xFF, me >> 8])
+        await self.write(EAR_CFG, [(1, 4, 16, 64).index(prescale)])
 
     def schedule(self, start, stimulus):
         """ISS-style stimulus (cycle, pin, level) relative to `start`."""

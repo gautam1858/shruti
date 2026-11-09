@@ -414,7 +414,7 @@ async def input_path_matches_reference_model(dut):
 import json  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-from harness import EAR_BEST, EAR_FEATURES, EAR_RESULT  # noqa: E402
+from harness import EAR_BEST, EAR_CFG, EAR_FEATURES, EAR_RESULT  # noqa: E402
 
 from ear import protosim  # noqa: E402
 from ear.features import extract  # noqa: E402
@@ -441,7 +441,7 @@ def ear_out(uo):
     return (uo >> 4) & 7, (uo >> 3) & 1, (uo >> 7) & 1          # pins' class, confident, ood
 
 
-async def ear_case(chip, model, pad_edges, cycles, initial=(1, 1, 1, 1)):
+async def ear_case(chip, model, pad_edges, cycles, initial=(1, 1, 1, 1), prescale=1):
     """Drive pad edges (cycle, pin 0-3, level) on B0-B3 from the Ear's first cycle and check
     every classification the reference makes, at the cycle the reference says it lands: the
     confident and OOD pins show the latest window, the class pins the last window that was
@@ -449,12 +449,12 @@ async def ear_case(chip, model, pad_edges, cycles, initial=(1, 1, 1, 1)):
     await chip.reset()
     chip.ext = sum(v << p for p, v in enumerate(initial)) | 0xF0
     await chip.ticks(4)
-    await chip.load_ear(model)
+    await chip.load_ear(model, prescale=prescale)
     start = await chip.start_ear()
     chip.schedule(start, [(c + 20, p, v) for c, p, v in pad_edges if c + 20 < cycles])
     await chip.ticks(start + cycles - chip.k)
     edges = filter_pins(list(initial), [(c + 20, p, v) for c, p, v in pad_edges if c + 20 < cycles], 0)
-    windows = extract(list(initial), edges, cycles)
+    windows = extract(list(initial), edges, cycles, prescale=prescale)
     shown = ear_out(chip.outs[start])
     assert shown[0] == 0, "class pins are 0 after reset"
     pins = 0
@@ -519,6 +519,43 @@ async def ear_matches_reference_with_random_weights(dut):
     assert total >= (4 if not GATES else 1)
     if not GATES:
         assert chip.ear_held > 0, "no window kept an earlier class on the pins" 
+
+
+def random_pad_edges(rng, cycles, scale=1, gaps=(1, 1, 2, 3, 5, 8, 13, 40, 90, 300)):
+    """Random edges on pins 0-3, gaps in units of `scale` cycles plus a random part of one."""
+    edges, level, t = [], [1, 1, 1, 1], 0
+    while t < cycles:
+        t += scale * rng.choice(gaps) + rng.randrange(scale)
+        for p in range(4):
+            if rng.random() < 0.4:
+                level[p] ^= 1
+                edges.append((t, p, level[p]))
+    return edges
+
+
+@cocotb.test()
+async def ear_prescaler_matches_reference(dut):
+    """EAR_CFG at 4, 16 and 64 cycles per tick: random weights on random edges spread over
+    ticks; every window's result and the cycle it lands match the reference."""
+    chip = await new_chip(dut)
+    rng = random.Random(21)
+    total = 0
+    for P in ((4, 16, 64) if not GATES else (16,)):
+        cycles = 3000 * P + 4000                  # three or more windows of 256 edges
+        edges = random_pad_edges(rng, cycles, P, gaps=(1, 1, 2, 3, 5, 8, 13))
+        total += await ear_case(chip, random_model(rng), edges, cycles, prescale=P)
+    assert total >= (3 if not GATES else 1)
+    await chip.write(EAR_CFG, [2])
+    assert (await chip.read(EAR_CFG))[0] == 2, "EAR_CFG reads back"
+
+
+@cocotb.test(skip=GATES)
+async def ear_prescaled_window_closes_after_65536_ticks(dut):
+    """Sparse edges at 4 cycles per tick: the window closes after 262,144 cycles."""
+    chip = await new_chip(dut)
+    rng = random.Random(4)
+    edges = [(100 + 2400 * i, i % 4, (i // 4 + 1) % 2) for i in range(110)]
+    assert await ear_case(chip, random_model(rng), edges, 4 * 65536 + 1000, prescale=4) == 1
 
 
 @cocotb.test(skip=GATES)

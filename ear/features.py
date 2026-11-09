@@ -24,8 +24,16 @@ pins the bus was wired to. The hardware sorts the four 16-bit keys at the end of
 and remaps the feature read address; the counters themselves stay per pin.
 
 A window closes at the end of the cycle in which the edge count on the monitored pins reaches
-256, or after 65,536 cycles, whichever comes first. The classifier then runs for
+256, or after 65,536 ticks, whichever comes first. The classifier then runs for
 INFER_CYCLES cycles, during which edges are not counted, and the next window starts.
+
+Prescaler (EAR_CFG): every time in a window is counted in ticks of P cycles, P = 1, 4, 16 or
+64, starting at the window's first cycle; tick n covers cycles w0 + nP .. w0 + nP + P - 1.
+Intervals are tick differences (two edges in the same tick give interval 0, coded as 1), the
+near window is 4 ticks, the time limit is 65,536 ticks, and time-high counts the ticks whose
+last cycle has the pin high, over a length of whole ticks. Edges are still seen every cycle.
+A slow bus at P = 16 then looks like the same bus 16 times faster at P = 1. At P = 1 a tick
+is a cycle and everything reads as above.
 """
 
 from __future__ import annotations
@@ -43,6 +51,7 @@ NEAR = 4
 INFER_CYCLES = 72 * 8 + 8 * 8 + 8                  # one weight per cycle, then argmax: 648
 
 CODE_NONE_MIN, CODE_NONE_MAX = 63, 0
+PRESCALES = (1, 4, 16, 64)                         # EAR_CFG[1:0] = 0, 1, 2, 3
 
 
 def log2_code(interval: int) -> int:
@@ -72,7 +81,7 @@ class Window:
 
 @dataclass
 class _PinState:
-    last: Optional[int] = None                     # cycle of the latest edge in this window
+    last: Optional[int] = None                     # tick of the latest edge in this window
     hist: List[int] = field(default_factory=lambda: [0] * 8)
     min_h: Optional[int] = None                    # half-octave index of the shortest interval
     min_code: int = CODE_NONE_MIN
@@ -115,12 +124,26 @@ def canonical_order(per_pin: Sequence[Sequence[int]]) -> List[int]:
 class Extractor:
     def __init__(self, initial: Sequence[int], start: int = 0,
                  max_edges: int = MAX_EDGES, max_cycles: int = MAX_CYCLES,
-                 infer_cycles: int = INFER_CYCLES, canonical: bool = True):
+                 infer_cycles: int = INFER_CYCLES, canonical: bool = True,
+                 prescale: int = 1):
+        if prescale not in PRESCALES:
+            raise ValueError(f"prescale must be one of {PRESCALES}")
         self.canonical = canonical
         self.level = list(initial)
+        self.P = prescale
         self.max_edges, self.max_cycles, self.infer = max_edges, max_cycles, infer_cycles
         self.windows: List[Window] = []
         self._open(start)
+
+    def _tick(self, c: int) -> int:
+        """Index of the tick that cycle c falls in (ticks start at the window's first cycle)."""
+        return (c - self.w0) // self.P
+
+    def _ticks_ending_in(self, a: int, b: int) -> int:
+        """Ticks whose last cycle lies in a .. b-1."""
+        P, w0 = self.P, self.w0
+        f = lambda c: (c - w0 + 1) // P          # ticks ending at or before cycle c - 1 + 1
+        return max(0, f(b - 1) - f(a - 1)) if b > a else 0
 
     def _open(self, w0: int) -> None:
         self.w0 = w0
@@ -131,8 +154,8 @@ class Extractor:
         self.hc_from = w0                          # levels apply from this cycle on
 
     def _accumulate_high(self, upto: int) -> None:
-        """Add cycles hc_from .. upto-1 at the current levels."""
-        span = upto - self.hc_from
+        """Add the ticks ending in cycles hc_from .. upto-1 at the current levels."""
+        span = self._ticks_ending_in(self.hc_from, upto)
         if span > 0:
             for p in range(PINS):
                 self.pins[p].high += self.level[p] * span
@@ -140,7 +163,7 @@ class Extractor:
 
     def _close(self, end: int) -> None:
         self._accumulate_high(end + 1)
-        length = end - self.w0 + 1
+        length = (end - self.w0 + 1) // self.P      # whole ticks; at least 1 (see SPEC)
         per = []
         for s in self.pins:
             per.append(list(s.hist) + [s.min_code, s.max_code, _sat(s.edges, 8) >> 2,
@@ -155,8 +178,9 @@ class Extractor:
         self._open(end + 1 + self.infer)
 
     def _close_by_time_before(self, c: int) -> None:
-        while c > self.w0 + self.max_cycles - 1 and c >= self.w0:
-            self._close(self.w0 + self.max_cycles - 1)
+        span = self.max_cycles * self.P
+        while c > self.w0 + span - 1 and c >= self.w0:
+            self._close(self.w0 + span - 1)
 
     def feed(self, edges: Sequence[Tuple[int, int, int]]) -> None:
         """Process edges (sorted by cycle)."""
@@ -169,18 +193,19 @@ class Extractor:
                 continue
             self._accumulate_high(c)
             changed = [p for _, p, _ in group]
+            t = self._tick(c)
             for _, p, v in group:
                 self.level[p] = v
                 s = self.pins[p]
-                s.interval(c)
-                s.last = c
+                s.interval(t)
+                s.last = t
                 s.edges += 1
             for b in changed:
                 for a in range(PINS):
                     if a == b:
                         continue
                     la = self.pins[a].last
-                    if la is not None and c - la <= NEAR:
+                    if la is not None and t - la <= NEAR:
                         self.near[(a, b)] = _sat(self.near[(a, b)] + 1, 6)
                     if self.level[a]:
                         self.hi[(a, b)] = _sat(self.hi[(a, b)] + 1, 6)

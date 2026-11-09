@@ -95,6 +95,57 @@ def test_window_closes_by_time_when_the_bus_is_slow():
     assert ws[1].start == MAX_CYCLES + INFER_CYCLES
 
 
+def _random_edges(rng, n=2000):
+    edges, lvl, t = [], [1, 1, 1, 1], 0
+    while len(edges) < n:
+        t += rng.choice([1, 1, 2, 3, 5, 8, 13, 40, 300])
+        for p in range(4):
+            if rng.random() < 0.4:
+                lvl[p] ^= 1
+                edges.append((t, p, lvl[p]))
+    return edges
+
+
+def test_prescale_one_is_the_default():
+    edges = _random_edges(random.Random(1))
+    a = extract([1, 1, 1, 1], edges, edges[-1][0] + 1)
+    b = extract([1, 1, 1, 1], edges, edges[-1][0] + 1, prescale=1)
+    assert [w.features for w in a] == [w.features for w in b] and len(a) >= 5
+
+
+@pytest.mark.parametrize("P", [4, 16, 64])
+def test_a_prescaled_bus_looks_like_the_same_bus_P_times_faster(P):
+    """Each edge moved from cycle c to cycle P*c (the first cycle of tick c): the first
+    window's features and edge count are the same, and it closes in the tick matching the
+    fast window's closing cycle."""
+    edges = _random_edges(random.Random(P), 400)
+    fast = extract([1, 1, 1, 1], edges, 10 ** 6)[0]
+    slow = extract([1, 1, 1, 1], [(P * c, p, v) for c, p, v in edges], 10 ** 8, prescale=P)[0]
+    assert slow.features == fast.features and slow.edges == fast.edges >= 256
+    assert slow.end == P * fast.end
+
+
+def test_prescaled_window_closes_after_65536_ticks():
+    edges = _toggle(2, range(500, 2_400_000, 8000))           # 150 edges per window
+    ws = extract([0, 0, 0, 0], edges, 2_400_000, prescale=16)
+    assert ws[0].end == 16 * MAX_CYCLES - 1
+    assert ws[1].start == 16 * MAX_CYCLES + INFER_CYCLES       # the pause stays in cycles
+
+
+def test_two_edges_in_one_tick_are_an_interval_of_one():
+    # pin 0 toggles at cycles 0, 1 (same tick of 4) then every 40 cycles (10 ticks)
+    edges = _toggle(0, [0, 1, 41, 81, 121, 161, 201])
+    w = extract([0, 0, 0, 0], edges, 4 * MAX_CYCLES, prescale=4)[0]
+    slot = w.order.index(0)
+    assert w.features[12 * slot + 8] == log2_code(1)           # min_code: interval 0 coded as 1
+    assert log2_code(1) < log2_code(10)
+
+
+def test_prescale_must_be_1_4_16_or_64():
+    with pytest.raises(ValueError):
+        extract([0, 0, 0, 0], [], 100, prescale=8)
+
+
 def test_pair_features():
     # pin 0 is a clock (period 20), pin 1 changes 2 cycles after each rising clock edge and
     # only while the clock is high

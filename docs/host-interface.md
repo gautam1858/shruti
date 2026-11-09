@@ -58,6 +58,7 @@ On a read, MISO changes shortly after each SCK rising edge, and the master sampl
 | 0xBE | EAR_FEATURES | R / W | Read: the next of the 72 features in canonical order. Write: restart at feature 0 |
 | 0xBF | EAR_EDGES | R | Edges in the current or held window, saturating at 255 |
 | 0xC0-0xC7 | EAR_THR | R/W | Hidden-unit thresholds B[0..7], signed bytes |
+| 0xC8 | EAR_CFG | R/W | Bits 1:0, the prescaler: 0, 1, 2, 3 for 1, 4, 16, 64 cycles per tick (window times count ticks, so slow buses close windows on edges). Change it while the Ear is disabled |
 
 The Ear's result also drives the output pins: `uo_out[6:4]` is the class, `uo_out[3]` the confident flag and `uo_out[7]` the out-of-distribution flag. The definition, timing and HOLD mode are in ear/SPEC.md.
 
