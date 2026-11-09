@@ -47,16 +47,24 @@ def test_score_counts_gated_windows_as_unanswered():
     assert sum(s.calls_all.values()) == 4
 
 
-def test_coverage_counts_slow_uart_windows_and_is_deterministic():
+def test_coverage_picks_a_prescaler_for_a_slow_uart_and_is_deterministic():
     m = ev.shipped()
     pts = {"UART": [("2,400 baud", {"period": ps.CLOCK_HZ / 2400, "duplex": False})]}
     a = ev.coverage(m, captures=1, speeds=pts)
     b = ev.coverage(m, captures=1, speeds=pts)
-    (label, name, mean_edges, s), = a
-    assert label == "UART" and s.windows >= 20            # 30 ms of 1.3 ms windows
-    assert mean_edges < ev.MIN_EDGES and s.answered < 0.2  # most are gated
+    (label, name, mean_edges, s, chosen), = a
+    assert label == "UART" and s.windows >= 1 and chosen == {64: 1}
+    assert mean_edges > ev.MIN_EDGES                       # past the activity gate at 64
     assert [(r[2], r[3].windows, r[3].answered) for r in a] == \
            [(r[2], r[3].windows, r[3].answered) for r in b]
+
+
+def test_probes_pick_a_prescaler_and_mark_what_sets_margin():
+    rows = ev.probes(ev.shipped(), duration=200_000)
+    assert len(rows) == 2 * len(ev.PROBES)
+    by = {(name, idle): (P, calib) for name, idle, _, P, calib in rows}
+    assert by[("PWM, 20 kHz, 20% duty", 0)] == (16, False)       # 2 edges per 2,500 cycles
+    assert by[("Clock, 1 MHz", 1)] == (1, True)
 
 
 def test_float_mlp_learns_a_separable_problem():

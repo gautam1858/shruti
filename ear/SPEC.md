@@ -89,7 +89,7 @@ The class and flags change at the end of the last pause cycle. The Python model 
 
 A slow bus at P = 16 then gives the same features as the same bus 16 times faster at P = 1 (tested with every edge moved to the first cycle of its tick), so a 9,600-baud UART, which at P = 1 closes its windows by time with about 6 edges, fills them at P = 64. A window can never end with zero whole ticks: 4 pins make at most 4 edges a cycle, so 256 edges take at least 64 cycles.
 
-The RTL adds a 6-bit counter, cleared with the window, and gates the `since`, length and time-high counters with its tick. The host picks P.
+The RTL adds a 6-bit counter, cleared with the window, and gates the `since`, length and time-high counters with its tick. The host picks P. `auto_prescale` in `ear/dataset.py` is the rule the training data and the evaluation use: the smallest P at which the first window closes on its edge count, 64 if none does.
 
 ## Weight chain
 

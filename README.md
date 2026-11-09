@@ -69,14 +69,14 @@ Every line names its evidence; the GitHub Actions in `.github/workflows` run all
 - **Event Machines** (two), the 24-bit timestamp counter, the 12-pin input path with its glitch filter, the pin drivers and the host SPI (`src/`, `docs/host-interface.md`). They match the ISS in every register, FIFO and pin, every cycle, over 60 random two-EM programs with random pins and host traffic (`test/test.py`: `event_machines_match_the_iss`), plus directed FIFO corner tests (`tx_fifo_write_in_the_cycle_of_a_pull`, `rx_fifo_two_byte_push_wraps`, `rx_fifo_read_in_the_cycle_after_a_push`) and the input path against its reference (`input_path_matches_reference_model`, `glitch_filter_modes`).
 - **27 formal properties of the Event Machine**, proved by k-induction, each failed by at least one of 31 planted bugs (`verify/README.md`, `formal` workflow).
 - **UART out of a pin:** `fw/uart_tx.s`, loaded and started over SPI, sends bytes out of B1 (the Pmod UART TXD pin), checked against the ISS (`uart_tx_out_of_a_pin`).
-- **The Ear in RTL:** 72 features, canonical pin order, a ternary 72-8-8 MLP, the weight ring and HOLD-mode readback. Bit-exact to `ear/features.py` and `ear/mlp.py` in class, flags and their timing on every window, and in all 72 features read back over SPI (`test/test.py`, the tests starting `ear_`).
+- **The Ear in RTL:** 72 features, canonical pin order, a ternary 72-8-8 MLP, the weight ring and HOLD-mode readback; a timebase prescaler of 1, 4, 16 or 64 cycles per tick (`EAR_CFG`) so slow buses fill their windows, and class pins that hold the last confident answer. Bit-exact to `ear/features.py` and `ear/mlp.py` in class, flags and their timing on every window, and in all 72 features read back over SPI (`test/test.py`, the tests starting `ear_`).
 - **Gate level:** the cocotb tests on the routed netlist, 11 passing and 2 RTL-only skipped (`gl_test` job).
 - **Physical:** 50 MHz met at all three corners, slow-corner setup slack +4.24 ns, 68.6% utilisation, 0 DRC and 0 antenna violations, precheck passing (commit fcafc0b, spec section 8). The `signoff` job fails the build on negative slack, DRC, antenna or LVS errors (`verify/signoff.py`).
 - **ISS** (`iss/`), generated from `isa/isa.yaml`: every instruction and scheduler rule (`iss/tests`).
 - **Assembler and disassembler** (`asm/`): round trip over all 65,536 words; conditional assembly and `-D` overrides, so one source builds every SPI mode.
 - **Firmware** (`fw/`), on Tiny Tapeout's recommended Pmod pinouts (either row): UART transmit and receive at every common baud rate from 300 to 3 Mbaud, SPI master and slave in each of modes 0-3, I2C master at 100 and 400 kHz, and an I2C target that receives writes (the host answers each ACK), each tested on the ISS against a model of the peer device, with injected faults (`fw/tests`). Controller and target roles both exist for SPI and I2C, and two protocols run at once, one per EM and Pmod row (`test_two_protocols_at_once`).
 - **Proofs** (`prove/`, `python -m shruti prove`): UART transmit (any number of frames), UART receive, SPI master (each of modes 0-3) and I2C master (standard and fast builds) against their contracts, with counterexamples replayed on the ISS.
-- **Ear training and evaluation** (`ear/`): the bit-exact reference, the protocol simulator, a trained model (92.8% test accuracy on simulated buses, UART recall 75%, 99.0% right when confident) and its evaluation in `ear/REPORT.md` (coverage by speed, foreign signals, held-out classes, float against integer; `ear/evaluate.py`).
+- **Ear training and evaluation** (`ear/`): the bit-exact reference, the protocol simulator, a trained model (94.4% test accuracy on simulated buses at the prescaler a host would pick, UART recall 83%; confident on 21% of windows and right on all of those) and its evaluation in `ear/REPORT.md` (coverage by speed, foreign signals, held-out classes, float against integer; `ear/evaluate.py`).
 
 ### Planned
 
@@ -84,19 +84,19 @@ Dates from the spec's milestones:
 - Watch at the cut level (2 monitors, a 16-entry recorder), then integration: checkpoint 29 Nov 2026.
 - FPGA bring-up on a Tang Nano 20K against a USB-UART adapter, an SPI flash and an I2C sensor: 6 Dec 2026.
 - The classifier proof; formal properties for edge capture and the recorder; a bounded equivalence check of the Event Machine against an ISS transliteration: 13 Dec 2026.
-- A prescaler for the Ear's timebase so slow buses get answers, and better training for fast UARTs: before the feature freeze, 20 Dec 2026.
+- Confident answers for UART, CAN and USB-LS, which the default MARGIN never gives: per-class margins (a hardware change, not yet decided) or another calibration: before the feature freeze, 20 Dec 2026.
 - `shruti teach` and `shruti load` (which refuses unproven programs), proofs for the SPI slave and the I2C target, and the PS/2 demo (firmware for a protocol the chip was not designed for, accepted by the prover with no code review): 20 Dec 2026; demos count only if passing by then.
 - An I2C target that can be read as well as written: the write target fills 32 words, so reads need their own program or the 64-word option: before the feature freeze, 20 Dec 2026.
 - Low-speed USB and the Ethernet stretch: only if passing by 20 Dec 2026.
 
 ### Known limitations
 
-On simulated buses with the shipped weights (`ear/REPORT.md`):
-- **Slow buses get no answer.** A window closes after 65,536 cycles (1.3 ms), so a UART at 19,200 baud or slower has at most about 11 edges per window and 95-100% of its windows are flagged; PS/2 is answered on 34-39% of windows.
-- **UART is answered but rarely confident.** From 38,400 to 460,800 baud, 86-94% of answered UART windows are right, but at most 2% are confident; at 1 Mbaud 62% are called CAN.
-- **Some fast windows are confidently wrong.** At 6.25 Mbit/s, Manchester windows are confident 90% of the time and right on 45% of those (CAN 38%).
-- **Foreign traffic is neither flagged nor abstained on.** A 20 kHz PWM, WS2812 LED data and random edges on four pins are flagged on 0% of windows, and the confident flag fires on 100%, 20-100% and 95% of them (as CAN, Manchester and JTAG/SWD). The first model abstained on almost all of these; the more accurate one does not, so "answers only when confident" does not hold for traffic the Ear was not trained on.
-- **Held-out protocols are not flagged either.** A model trained without JTAG/SWD and PS/2 flags at most 2% of their windows and confidently calls 68% of JTAG/SWD windows another protocol and 60% of PS/2 windows UART.
+On simulated buses with the shipped weights (`ear/REPORT.md`), each bus at the prescaler a host would pick:
+- **UART, CAN and USB-LS are never confident with the default MARGIN.** They are answered and mostly right (UART 74-95% of answered windows from 2,400 baud to 3 Mbaud, CAN 92-97%, USB-LS 100%), but MARGIN is set so that at most 5% of foreign validation windows are confident, and at that setting none of their windows is. The class pins hold the last confident class, so they never show these three. MARGIN is a host register: a lower one brings them back at the cost of confident answers on more foreign traffic. Per-class margins would fix it in hardware; they are not built.
+- **Confident answers are rarer and right.** 21% of test windows are confident, all of them right, against 64% (99.0% right) before the foreign calibration.
+- **A PWM signal is confidently called CAN.** A 20 kHz PWM, a kind of signal used nowhere in training or calibration, is confident on 100% of its windows; WS2812 LED data, a 1 MHz clock and random edges on one pin on 0%, random edges on four pins on 0-13%.
+- **The out-of-distribution flag is uneven.** The logit floor flags 94% of fast random edges on four pins and 13% of slow ones, and none of the PWM, WS2812, clock or one-pin windows.
+- **The held-out check reaches its limit.** A model trained without JTAG/SWD and PS/2 is confident on 3% of JTAG/SWD windows (as SPI) and none of PS/2, but no MARGIN met both conditions for it, so it sits at 255 and is confident on only 2.5% of its own classes.
 
 ## Repository layout
 

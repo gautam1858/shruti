@@ -14,8 +14,10 @@ The recipe, per restart:
    optimises the model the hardware runs, so nothing is lost at export.
 The restart with the best balanced validation accuracy (mean recall over classes) is kept.
 MARGIN is the smallest margin at which the confident windows are at least 99% right on the
-validation set. Every reported number comes from the integer model, never from the float
-network.
+validation set and at most 5% of foreign windows (random edges and clocks, not any trained
+protocol; ear.dataset.build_foreign) are confident. Without the second condition the model
+is confident on most foreign traffic. Every reported number comes from the integer model,
+never from the float network.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from . import protosim as ps
-from .dataset import MIN_EDGES, Dataset, build
+from .dataset import MIN_EDGES, Dataset, build, build_foreign
 from .mlp import CLASSES_N, HIDDEN, Config, Model
 
 N_IN = 72
@@ -62,6 +64,8 @@ class TrainConfig:
     seed: int = 0
     sweeps: int = 60                    # exact-search sweeps per restart (0: no search)
     precision: float = 0.99             # MARGIN target: precision of confident windows
+    foreign: int = 200                  # foreign captures for MARGIN (0: none), half held out
+    foreign_rate: float = 0.05          # MARGIN target: confident share of foreign windows
 
 
 def _scaled(w: np.ndarray) -> Tuple[np.ndarray, float]:
@@ -243,19 +247,29 @@ def _best_shift(T1, T2, bias, X, y) -> Tuple[int, float]:
     return s, float(acc)
 
 
-def calibrate(logits: np.ndarray, y: np.ndarray, edges: np.ndarray,
-              false_alarm: float = 0.05, precision: float = 0.99) -> Tuple[int, int]:
-    """MARGIN: the smallest margin (0..255) at which the windows marked confident are at
-    least `precision` right on validation data (255 if none is). FLOOR: the false_alarm
-    quantile of the best logit on known classes."""
+def margins(logits: np.ndarray) -> np.ndarray:
     srt = np.sort(logits, axis=1)
-    best, second = srt[:, -1], srt[:, -2]
-    gap = best - second
+    return srt[:, -1] - srt[:, -2]
+
+
+def calibrate(logits: np.ndarray, y: np.ndarray, edges: np.ndarray,
+              false_alarm: float = 0.05, precision: float = 0.99,
+              foreign: Optional[np.ndarray] = None, foreign_rate: float = 0.05
+              ) -> Tuple[int, int]:
+    """MARGIN: the smallest margin (0..255) at which the windows marked confident are at
+    least `precision` right on validation data and, given foreign logits, at most
+    `foreign_rate` of the foreign windows are confident (255 if none is). FLOOR: the
+    false_alarm quantile of the best logit on known classes."""
+    srt = np.sort(logits, axis=1)
+    best = srt[:, -1]
+    gap = margins(logits)
+    fgap = margins(foreign) if foreign is not None and len(foreign) else None
     correct = predict(logits) == y
     margin = 255
     for m in range(256):
         conf = gap >= m
-        if conf.any() and np.mean(correct[conf]) >= precision:
+        if (conf.any() and np.mean(correct[conf]) >= precision
+                and (fgap is None or np.mean(fgap >= m) <= foreign_rate)):
             margin = m
             break
     floor = int(np.floor(np.quantile(best, false_alarm)))
@@ -280,6 +294,7 @@ class Report:
     ood_unknown: Optional[float] = None            # OOD flag rate on held-out classes
     recall: Optional[Dict[str, float]] = None      # per trained class, on the test set
     balanced_accuracy: Optional[float] = None      # mean of recall, on the test set
+    foreign_confident: Optional[float] = None      # confident share of held-out foreign windows
 
 
 def train(captures_per_class: int = 60, seed: int = 1, classes: Sequence[str] = ps.CLASSES,
@@ -301,8 +316,15 @@ def train(captures_per_class: int = 60, seed: int = 1, classes: Sequence[str] = 
         if best is None or bal > best[0]:
             best = (bal, float(np.mean(pv == yva)), T1, T2, bias, s)
     _, val_acc, T1, T2, bias, shift = best
+    Fcal = Fte = None
+    if tc.foreign:                                 # half sets MARGIN, half is held out
+        fds = build_foreign(tc.foreign, seed + 2000)
+        Xf, gf = np.array(fds.X, dtype=np.int64).reshape(-1, 72), np.array(fds.group)
+        Fcal = int_logits(T1, T2, Xf[gf % 2 == 0], shift, bias)
+        Fte = int_logits(T1, T2, Xf[gf % 2 == 1], shift, bias)
     margin, floor = calibrate(int_logits(T1, T2, Xva, shift, bias), yva, eva,
-                              precision=tc.precision)
+                              precision=tc.precision, foreign=Fcal,
+                              foreign_rate=tc.foreign_rate)
     model = Model(T1.tolist(), T2.tolist(), Config(shift, margin, floor, MIN_EDGES),
                   [int(b) for b in bias])
 
@@ -331,7 +353,8 @@ def train(captures_per_class: int = 60, seed: int = 1, classes: Sequence[str] = 
         recall={c: round(float(np.mean(pred[yte == ps.CLASSES.index(c)]
                                        == ps.CLASSES.index(c))), 4)
                 for c in classes if np.any(yte == ps.CLASSES.index(c))},
-        balanced_accuracy=round(balanced_accuracy(pred, yte), 4))
+        balanced_accuracy=round(balanced_accuracy(pred, yte), 4),
+        foreign_confident=None if Fte is None else round(float(np.mean(margins(Fte) >= margin)), 4))
     return model, report
 
 
@@ -359,10 +382,13 @@ def report_markdown(r: Report, title: str) -> str:
              f"MIN_EDGES {r.min_edges}",
              f"- Confident on {r.confident_rate:.1%} of test windows; accuracy when confident "
              f"{r.confident_accuracy:.1%} (MARGIN is the smallest margin giving 99% on "
-             f"validation)",
+             f"validation with at most 5% of foreign validation windows confident)",
              f"- OOD flag rate on trained classes (false alarms): {r.ood_known:.1%}"]
     if r.ood_unknown is not None:
         lines.append(f"- OOD flag rate on classes held out of training: {r.ood_unknown:.1%}")
+    if r.foreign_confident is not None:
+        lines.append(f"- Confident on {r.foreign_confident:.1%} of held-out foreign windows "
+                     "(random edges and clocks)")
     if r.recall:
         lines.append("- Recall per class (test): "
                      + ", ".join(f"{c} {v:.0%}" for c, v in r.recall.items()))

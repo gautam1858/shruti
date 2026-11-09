@@ -64,6 +64,20 @@ def test_calibrate_margin_is_the_smallest_meeting_the_precision():
     assert margin == 10
     margin, _ = calibrate(logits, y, np.full(40, 256), precision=0.75)
     assert margin <= 10 and np.mean((y == 1)[gaps >= margin]) >= 0.75
+    # Foreign windows with gaps 0..19: at most 5% may be confident, so MARGIN rises to 19.
+    foreign = np.zeros((20, 8), dtype=int)
+    foreign[:, 3] = np.arange(20)
+    margin, _ = calibrate(logits, y, np.full(40, 256), precision=0.99, foreign=foreign)
+    assert margin == 19 and np.mean(np.arange(20) >= margin) <= 0.05
+
+
+def test_auto_prescale_picks_the_smallest_tick_that_fills_a_window():
+    from ear.dataset import auto_windows
+    fast, info_f = auto_windows("SPI", "t/spi", half=6)               # 4 MHz SCK
+    slow, info_s = auto_windows("UART", "t/uart", period=50_000_000 / 9600)
+    assert info_f["prescale"] == 1 and fast and all(w.edges >= 256 for w in fast)
+    assert info_s["prescale"] > 1 and slow
+    assert max(w.edges for w in slow) > 24                         # past the activity gate
 
 
 def test_dataset_is_balanced_and_split_by_capture():
@@ -76,7 +90,7 @@ def test_dataset_is_balanced_and_split_by_capture():
 @pytest.mark.parametrize("seed", [3])
 def test_small_training_run_beats_chance_and_exports(tmp_path, seed):
     classes = ["UART", "SPI", "I2C", "PS/2"]
-    tc = TrainConfig(float_epochs=300, qat_epochs=300, restarts=1)
+    tc = TrainConfig(float_epochs=300, qat_epochs=300, restarts=1, foreign=6)
     model, report = train(captures_per_class=12, seed=seed, classes=classes, tc=tc)
     assert report.test_accuracy > 0.5                       # chance is 0.25
     assert sum(map(sum, report.confusion)) > 0

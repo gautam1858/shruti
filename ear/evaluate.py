@@ -30,8 +30,9 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from . import protosim as ps
-from .dataset import MIN_EDGES, Dataset, build, capture_windows
-from .features import extract
+from .dataset import (MIN_EDGES, Dataset, auto_windows, build, capture_windows, clock,
+                      random_edges, toggles)
+from .features import MAX_EDGES, PRESCALES, extract
 from .inpath import BYPASS, filter_pins
 from .mlp import CLASSES_N, Model
 from .train import TrainConfig, int_logits, load, predict, split, train
@@ -109,34 +110,27 @@ def score(model: Model, feats: np.ndarray, edges: np.ndarray, truth: Optional[in
 
 def coverage(model: Model, captures: int = 20, seed: int = 11,
              speeds: Dict[str, List[Tuple[str, dict]]] = SPEEDS, max_windows: int = 40
-             ) -> List[Tuple[str, str, float, Scored]]:
-    """Every class across its speed range. Gated windows are counted, not dropped."""
+             ) -> List[Tuple[str, str, float, Scored, Counter]]:
+    """Every class across its speed range, each capture at the prescaler a host would pick
+    (ear.dataset.auto_windows). Gated windows are counted, not dropped."""
     rows = []
     for label, points in speeds.items():
         k = ps.CLASSES.index(label)
         for name, kw in points:
-            rng = random.Random(f"{seed}/{label}/{name}")
-            feats, edges = [], []
-            for _ in range(captures):
-                cap = ps.generate(label, rng, duration=DURATION, **kw)
-                ws, _ = capture_windows(cap, rng, min_edges=0, max_windows=max_windows)
+            feats, edges, chosen = [], [], Counter()
+            for i in range(captures):
+                ws, info = auto_windows(label, f"{seed}/{label}/{name}/{i}", min_edges=0,
+                                        max_windows=max_windows, base=DURATION, **kw)
+                chosen[info["prescale"]] += 1
                 feats += [w.features for w in ws]
                 edges += [w.edges for w in ws]
             e = np.array(edges, dtype=np.int64)
             s = score(model, np.array(feats, dtype=np.int64).reshape(-1, 72), e, k)
-            rows.append((label, name, float(e.mean()) if len(e) else 0.0, s))
+            rows.append((label, name, float(e.mean()) if len(e) else 0.0, s, chosen))
     return rows
 
 
 # -- foreign signals (E3) ------------------------------------------------------------------
-
-def _toggles(times: Sequence[int], pin: int) -> List[Tuple[int, int, int]]:
-    out, lvl = [], 0
-    for t in times:
-        lvl ^= 1
-        out.append((t, pin, lvl))
-    return out
-
 
 def pwm(freq: float, duty: float, duration: int = DURATION) -> List[Tuple[int, int, int]]:
     per, ev, t = CLK / freq, [], 0.0
@@ -160,51 +154,44 @@ def ws2812(rng: random.Random, duration: int = DURATION) -> List[Tuple[int, int,
         t += rng.uniform(2600, 30_000)
 
 
-def random_edges(rng: random.Random, mean: float, pins: int,
-                 duration: int = DURATION) -> List[Tuple[int, int, int]]:
-    ev = []
-    for p in range(pins):
-        t, ts = 0.0, []
-        while True:
-            t += rng.expovariate(1 / mean)
-            if t >= duration:
-                break
-            ts.append(int(t))
-        ev += _toggles(sorted(set(ts)), p)
-    return sorted(ev)
-
-
-def clock(freq: float, duration: int = DURATION) -> List[Tuple[int, int, int]]:
-    half = CLK / freq / 2
-    return _toggles([int(round(k * half)) for k in range(1, int(duration / half))], 0)
+# (name, generator(rng, duration), whether that kind of signal helps set MARGIN). Random edges
+# and clocks are the kinds ear.dataset.build_foreign draws from (with other parameters and
+# seeds); PWM and WS2812 data are never used in training or calibration.
+PROBES: List[Tuple[str, Callable, bool]] = [
+    ("PWM, 20 kHz, 20% duty", lambda rng, d: pwm(20e3, 0.2, d), False),
+    ("WS2812 LED data, 800 kHz", lambda rng, d: ws2812(rng, d), False),
+    ("Random edges on 4 pins, mean 1 us", lambda rng, d: random_edges(rng, 50, 4, d), True),
+    ("Random edges on 4 pins, mean 20 us", lambda rng, d: random_edges(rng, 1000, 4, d), True),
+    ("Clock, 1 MHz", lambda rng, d: clock(1e6, d), True),
+    ("Random edges on 1 pin, mean 1 us", lambda rng, d: random_edges(rng, 50, 1, d), True),
+]
 
 
 def probe_signals(seed: int = 7, duration: int = DURATION
                   ) -> List[Tuple[str, List[Tuple[int, int, int]]]]:
-    rng = random.Random(seed)
-    return [
-        ("PWM, 20 kHz, 20% duty", pwm(20e3, 0.2, duration)),
-        ("WS2812 LED data, 800 kHz", ws2812(rng, duration)),
-        ("Random edges on 4 pins, mean 1 us", random_edges(rng, 50, 4, duration)),
-        ("Random edges on 4 pins, mean 20 us", random_edges(rng, 1000, 4, duration)),
-        ("Clock, 1 MHz", clock(1e6, duration)),
-        ("Random edges on 1 pin, mean 1 us", random_edges(rng, 50, 1, duration)),
-    ]
+    return [(name, make(random.Random(f"{seed}/{name}"), duration)) for name, make, _ in PROBES]
 
 
 def probes(model: Model, seed: int = 7, duration: int = DURATION
-           ) -> List[Tuple[str, int, Scored]]:
+           ) -> List[Tuple[str, int, Scored, Optional[int], bool]]:
     """Each signal on the Ear's pins with the filter in bypass, once with the unused pins
-    idle low and once idle high (training draws both)."""
+    idle low and once idle high (training draws both), at the prescaler a host would pick:
+    the smallest whose first window closes on its edge count, on a signal long enough for
+    windows at that prescaler."""
     rows = []
-    for name, edges in probe_signals(seed, duration):
-        active = {p for _, p, _ in edges}            # the signals start low
+    for name, make, calib in PROBES:
         for idle in (0, 1):
-            init = [0 if p in active else idle for p in range(4)]
-            ws = extract(init, filter_pins(init, edges, BYPASS), duration)
+            for P in PRESCALES:
+                d = duration * P
+                edges = make(random.Random(f"{seed}/{name}"), d)
+                active = {p for _, p, _ in edges}    # the signals start low
+                init = [0 if p in active else idle for p in range(4)]
+                ws = extract(init, filter_pins(init, edges, BYPASS), d, prescale=P)
+                if ws and (ws[0].edges >= MAX_EDGES or P == PRESCALES[-1]):
+                    break
             s = score(model, np.array([w.features for w in ws], dtype=np.int64).reshape(-1, 72),
                       np.array([w.edges for w in ws], dtype=np.int64), None)
-            rows.append((name, idle, s))
+            rows.append((name, idle, s, P if ws else None, calib))
     return rows
 
 
@@ -338,32 +325,42 @@ def markdown(cov, prb, ho: Optional[HeldOut], gap, duration: int = DURATION,
     L = [MARKER, "", "## Coverage by speed",
          "",
          f"Every class at fixed speeds across the range the protocol simulator covers, "
-         f"{captures} captures of {DURATION:,} cycles (30 ms) per speed, with the shipped "
-         "weights (up to 40 windows per capture). Windows the "
+         f"{captures} captures per speed, with the shipped weights (up to 40 windows per "
+         "capture). Each capture is cut at the prescaler a host would pick: the smallest of "
+         "1, 4, 16 and 64 cycles per tick at which the first window closes on its edge "
+         f"count, on a capture of {DURATION:,} cycles (30 ms) times the prescaler. Windows the "
          "activity gate flags (fewer than MIN_EDGES edges) are counted here; the training "
          "report above drops them. Answered: not flagged out-of-distribution. Confident: "
          "answered and confident, which is what \"answers only when confident\" shows. "
          "Precision: right among the confident windows.", "",
-         "| Class | Speed | Windows | Mean edges | Answered | Accuracy (answered) | Confident "
-         "| Precision | Most common answer |",
-         "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
-    for label, name, me, s in cov:
+         "| Class | Speed | Prescaler | Windows | Mean edges | Answered | Accuracy (answered) "
+         "| Confident | Precision | Most common answer |",
+         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+    for label, name, me, s, chosen in cov:
         top = ", ".join(f"{c} {_pct(n / max(1, sum(s.calls.values())))}"
                         for c, n in s.calls.most_common(2)) or "-"
-        L.append(f"| {label} | {name} | {s.windows} | {me:.1f} | {_pct(s.answered)} | "
+        pre = ", ".join(str(p) for p, _ in sorted(chosen.items(), key=lambda kv: -kv[1])
+                        if p is not None) or "-"
+        L.append(f"| {label} | {name} | {pre} | {s.windows} | {me:.1f} | {_pct(s.answered)} | "
                  f"{_pct(s.accuracy)} | {_pct(s.confident)} | {_pct(s.precision)} | {top} |")
-    L += ["", "A 65,536-cycle window lasts 1.3 ms, so a slow bus closes most windows by time "
-          "with only a handful of edges, and the activity gate (MIN_EDGES 24) flags them.", "",
-          "## Signals the Ear was never trained on", "",
-          "Each signal on one Ear pin (four pins for the random edges), filter in bypass, "
-          f"{duration:,} cycles, shipped weights. Training draws the idle level of unused "
-          "pins at random, so both levels are shown.", "",
-          "| Signal | Unused pins idle | Windows | OOD flag | Confident | Most common class |",
-          "| --- | --- | --- | --- | --- | --- |"]
-    for name, idle, s in prb:
+    L += ["", "Prescaler: the cycles per tick chosen, most common first. At 1 cycle per tick a "
+          "window lasts at most 1.3 ms; at 64, 84 ms, so a slow bus fills it with edges "
+          "instead of closing it by time with a handful, which the activity gate (MIN_EDGES "
+          "24) would flag.", "",
+          "## Signals outside the trained classes", "",
+          "Each signal on one Ear pin (four pins for the random edges), filter in bypass, at "
+          "the prescaler a host would pick, shipped weights. Training draws the idle level of "
+          "unused pins at random, so both levels are shown. Random edges and clocks are the "
+          "kinds of signal MARGIN is calibrated against (with other rates and seeds); PWM "
+          "and WS2812 data are used nowhere in training or calibration.", "",
+          "| Signal | Sets MARGIN | Unused pins idle | Prescaler | Windows | OOD flag | "
+          "Confident | Most common class |",
+          "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+    for name, idle, s, P, calib in prb:
         top = ", ".join(f"{c} {n}" for c, n in s.calls_all.most_common(2)) or "-"
-        L.append(f"| {name} | {'high' if idle else 'low'} | {s.windows} | "
-                 f"{_pct(1 - s.answered)} | {_pct(s.confident)} | {top} |")
+        L.append(f"| {name} | {'kind of' if calib else 'no'} | {'high' if idle else 'low'} | "
+                 f"{P if P else '-'} | {s.windows} | {_pct(1 - s.answered)} | "
+                 f"{_pct(s.confident)} | {top} |")
     if ho is not None:
         r = ho.report
         L += ["", "## Classes held out of training", "",
