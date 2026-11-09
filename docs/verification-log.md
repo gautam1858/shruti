@@ -49,6 +49,14 @@ Ear evaluation beyond the test set (ear/evaluate.py, 8 Oct). Design findings, no
 - Fast UARTs are classified CAN on 84-95% of answered windows from 115,200 baud up; a float network on the same features reaches 83% UART recall against the integer model's 19%, so this is training, not features.
 - The out-of-distribution flag misses foreign signals and held-out classes; the prototype-distance alternative flags 15% of held-out JTAG/SWD at 5% false alarms. The confident flag is the signal to trust, though it fires on 6% of WS2812 windows when the unused pins idle low and on 43% of held-out JTAG/SWD (as SPI).
 
+Ear training (Phase B, Nov 2026). Design findings, not bugs; ear/REPORT.md has the numbers.
+- Gradient training underfit: the ternary integer models reached only 84-90% on their own training data, against 97.8% for a float network of the same size. Found by comparing training and test accuracy; fixed by an exact search on the integer model (ear/train.py, refine).
+- Model selection was noise: with 60 UART validation windows, the restart picked by validation accuracy had 19% UART recall while others reached 82%. Fixed by 400 captures per class and selection on balanced validation accuracy.
+- The more accurate model stopped abstaining on foreign traffic: confident on 95-100% of PWM and random-edge windows and 60-68% of held-out PS/2 and JTAG/SWD, where the first model abstained. Found by ear/evaluate.py's probes. Training against foreign windows cost too much accuracy; MARGIN is now calibrated against them instead. Left open: a 20 kHz PWM is still confidently called CAN, and at the shipped MARGIN UART, CAN and USB-LS are never confident.
+
+Flow (local tools, Phase B)
+- Icarus Verilog 12 does not drive the delayed signals of the CMOS5L flip-flop models' timing checks, so in a local gate-level run every flip-flop stays unknown and every test fails. A local copy of the models with those signals assigned from their pins runs the Event Machine tests, but the gate-level Ear tests did not finish in this container; Phase B's gate-level evidence is CI's gl_test on the routed netlist.
+
 Firmware (all found by running on the ISS against a peer model)
 - SPI master: two OUTs scheduled at the same T set LATE; fixed with `ADDT 3, now`.
 - I2C master: level WAITs on SCL matched a stale level after clock stretching; fixed with edge waits. The prover now rejects the level-wait variant as well.
@@ -148,3 +156,14 @@ I2C target (fw/i2c_target.s, 10 Oct), each bug planted alone against the scenari
 | Any SDA fall taken as a START | joining mid-transaction |
 
 The two recheck bugs pass at the usual 8-cycle data hold; only the master with no hold time catches them, which is why that scenario exists.
+
+Class pins (src/shruti_ear.v, Phase B): wiring uo_out[6:4] back to the latest window's class, instead of the last confident one, fails both Ear class tests (`ear_classifies_protocol_traffic_like_the_reference`, `ear_matches_reference_with_random_weights`).
+
+Ear prescaler (src/shruti_ear.v, Phase B), each bug planted alone against the prescaler tests:
+
+| Planted bug | Caught by |
+| --- | --- |
+| Time-high counted every cycle instead of every tick | prescaler at 4, 16 and 64 against the reference |
+| Interval counter counts cycles instead of ticks | prescaler at 4, 16 and 64 against the reference |
+| Time limit closes one tick early (no tick condition) | prescaled window closing after 65,536 ticks |
+| Prescaler not restarted with the window | prescaler at 4, 16 and 64 against the reference |

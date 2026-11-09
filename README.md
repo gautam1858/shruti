@@ -63,7 +63,7 @@ Planned: protocol-level cocotb bus models with mutation tests, formal properties
 
 Spec v1.0: 23 Sep 2026, with the ISA reconciled to v1.1 (`docs/isa-decisions.md`). RTL in Verilog.
 
-### Built and tested (as of commit df5096b, 10 Oct 2026)
+### Built and tested (as of commit 353dc90, 9 Nov 2026)
 
 Every line names its evidence; the GitHub Actions in `.github/workflows` run all of it on every push.
 - **Event Machines** (two), the 24-bit timestamp counter, the 12-pin input path with its glitch filter, the pin drivers and the host SPI (`src/`, `docs/host-interface.md`). They match the ISS in every register, FIFO and pin, every cycle, over 60 random two-EM programs with random pins and host traffic (`test/test.py`: `event_machines_match_the_iss`), plus directed FIFO corner tests (`tx_fifo_write_in_the_cycle_of_a_pull`, `rx_fifo_two_byte_push_wraps`, `rx_fifo_read_in_the_cycle_after_a_push`) and the input path against its reference (`input_path_matches_reference_model`, `glitch_filter_modes`).
