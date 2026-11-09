@@ -79,6 +79,7 @@ Spec (found while building the Ear)
 
 Flow
 - The CMOS5L template's gate-level Makefile leaves out `sg13cmos5l_udp.v`, where the PDK keeps the flip-flop primitives, so every gate-level test failed to elaborate. Fixed in test/Makefile. The upstream template has the same omission.
+- The move to the template's `ttihp27a` action (Phase B, 8x4) changed synthesis with no change to the design. That action installs LibreLane 3.1.0.dev4, which makes `DELAY 4` the default `SYNTH_STRATEGY`, where 3.1.0.dev3 had `AREA 0`. The same RTL synthesised to 44,393 cells instead of 27,789. Found by comparing the run's resolved configuration with the variable defaults of the two LibreLane releases. The new PDK revision also drops the multiplexer map files, but neither release reads those variables. src/config.json now sets `AREA 0`.
 
 ## Mutation tests: planted bugs
 
