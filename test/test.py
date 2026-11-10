@@ -429,13 +429,17 @@ def trained_model():
     return Model.from_hex((EAR_DIR / "weights/default.hex").read_text(), Config(**cfg))
 
 
-def random_model(rng):
+def random_model(rng, per_class=False):
+    """Random weights and configuration; per_class adds random per-class margins, drawn last so
+    the tests without them keep their random streams."""
     w = lambda: rng.choice([0, 0, 1, -1])
-    return Model([[w() for _ in range(72)] for _ in range(8)], [[w() for _ in range(8)] for _ in range(8)],
-                 Config(shift=rng.randrange(7), margin=rng.randrange(40),
-                        floor=rng.randrange(-200, 200), min_edges=rng.randrange(0, 257),
-                        margins=[rng.randrange(40) for _ in range(8)]),
-                 [rng.randrange(-128, 128) for _ in range(8)])
+    m = Model([[w() for _ in range(72)] for _ in range(8)], [[w() for _ in range(8)] for _ in range(8)],
+              Config(shift=rng.randrange(7), margin=rng.randrange(40),
+                     floor=rng.randrange(-200, 200), min_edges=rng.randrange(0, 257)),
+              [rng.randrange(-128, 128) for _ in range(8)])
+    if per_class:
+        m.cfg.margins = [rng.randrange(40) for _ in range(8)]
+    return m
 
 
 def ear_out(uo):
@@ -508,7 +512,7 @@ async def ear_matches_reference_with_random_weights(dut):
     rng = random.Random(9)
     total = 0
     for _ in range(4 if not GATES else 1):
-        model = random_model(rng)
+        model = random_model(rng, per_class=True)
         edges, level, t = [], [1, 1, 1, 1], 0
         while t < 9000:
             t += rng.choice([1, 1, 2, 3, 5, 8, 13, 40, 90, 300])
@@ -553,24 +557,29 @@ async def ear_prescaler_matches_reference(dut):
 @cocotb.test()
 async def ear_per_class_margins_match_reference(dut):
     """Per-class margins at the windows' own gaps: a class's margin is the gap of the first
-    window the reference calls that class, plus one for even classes, and 255 for classes no
-    window is called. A window's confidence then depends on which class's margin the
-    hardware compares, to the last unit."""
+    window the reference calls that class, plus one for every other class in the order they
+    appear, and 255 for classes no window is called. A window's confidence then depends on
+    which class's margin the hardware compares, to the last unit."""
     chip = await new_chip(dut)
     rng = random.Random(33)
     total = 0
     for _ in range(3 if not GATES else 1):
-        model = random_model(rng)
         cycles = 30000
-        pad = random_pad_edges(rng, cycles)
-        edges = filter_pins([1] * 4, [(c + 20, p, v) for c, p, v in pad if c + 20 < cycles], 0)
-        gaps = {}
-        for w in extract([1] * 4, edges, cycles):
-            r = model.infer(w.features, w.edges)
-            top = sorted(r.logits)
-            gaps.setdefault(r.cls, []).append(top[-1] - top[-2])
-        model.cfg.margins = [min(255, gaps[k][0] + (k % 2 == 0)) if k in gaps else 255
+        for _ in range(50):                      # random weights often call one class only
+            model = random_model(rng)
+            pad = random_pad_edges(rng, cycles)
+            edges = filter_pins([1] * 4, [(c + 20, p, v) for c, p, v in pad if c + 20 < cycles], 0)
+            gaps = {}
+            for w in extract([1] * 4, edges, cycles):
+                r = model.infer(w.features, w.edges)
+                top = sorted(r.logits)
+                gaps.setdefault(r.cls, []).append(top[-1] - top[-2])
+            if len(gaps) >= 2:
+                break
+        order = list(gaps)                       # classes in the order windows call them
+        model.cfg.margins = [min(255, gaps[k][0] + (order.index(k) % 2)) if k in gaps else 255
                              for k in range(8)]
+        assert len(order) >= 2, "the windows should call at least two classes"
         conf = [g >= model.cfg.margins[k] for k, gs in gaps.items() for g in gs]
         assert any(conf) and not all(conf), "margins should split the windows"
         total += await ear_case(chip, model, pad, cycles)
