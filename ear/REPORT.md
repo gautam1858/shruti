@@ -8,9 +8,10 @@ Trained on: UART, SPI, I2C, USB-LS, CAN, JTAG/SWD, PS/2, Manchester. Windows per
 
 - Integer model accuracy: validation 94.4%, test 94.4% (balanced: 94.4%)
 - Configuration: SHIFT 2, MARGIN 56, FLOOR 51, MIN_EDGES 24
-- Confident on 21.3% of test windows; accuracy when confident 100.0% (MARGIN is the smallest margin giving 99% on validation with at most 5% of foreign validation windows confident)
+- Per-class MARGIN (EAR_MARGIN_K): UART 44, SPI 9, I2C 10, USB-LS 25, CAN 59, JTAG/SWD 57, PS/2 23, Manchester 47. Each class is at least 99% right among its confident validation windows, and together at most 5% of foreign validation windows are confident; MARGIN alone (one margin for every class, for a host that writes only EAR_MARGIN) is the smallest giving the same on all classes at once
+- Confident on 57.7% of test windows; accuracy when confident 99.9%
 - OOD flag rate on trained classes (false alarms): 4.7%
-- Confident on 7.0% of held-out foreign windows (random edges and clocks)
+- Confident on 10.5% of held-out foreign windows (random edges and clocks)
 - Recall per class (test): UART 83%, SPI 99%, I2C 98%, USB-LS 99%, CAN 93%, JTAG/SWD 100%, PS/2 99%, Manchester 84%
 
 Confusion matrix on the test set (rows: true class, columns: predicted):
@@ -32,7 +33,8 @@ Trained on: UART, SPI, I2C, USB-LS, CAN, Manchester. Windows per class: UART 239
 
 - Integer model accuracy: validation 93.1%, test 93.8% (balanced: 93.7%)
 - Configuration: SHIFT 2, MARGIN 255, FLOOR 74, MIN_EDGES 24
-- Confident on 2.5% of test windows; accuracy when confident 100.0% (MARGIN is the smallest margin giving 99% on validation with at most 5% of foreign validation windows confident)
+- Per-class MARGIN (EAR_MARGIN_K): 255 for every class: no margins met 99% on every class with at most 5% of foreign validation windows confident
+- Confident on 2.5% of test windows; accuracy when confident 100.0%
 - OOD flag rate on trained classes (false alarms): 4.7%
 - OOD flag rate on classes held out of training: 0.2%
 - Confident on 12.8% of held-out foreign windows (random edges and clocks)
@@ -66,28 +68,28 @@ Every class at fixed speeds across the range the protocol simulator covers, 20 c
 | UART | 460,800 baud | 4, 1 | 765 | 253.3 | 84% | 90% | 0% | - | UART 90%, CAN 10% |
 | UART | 1,000,000 baud | 1 | 777 | 256.0 | 92% | 74% | 0% | - | UART 74%, CAN 24% |
 | UART | 3,000,000 baud | 1 | 760 | 256.0 | 98% | 83% | 0% | - | UART 83%, CAN 12% |
-| SPI | 100 kHz SCK | 1, 4 | 567 | 246.0 | 85% | 100% | 55% | 100% | SPI 100%, PS/2 0% |
-| SPI | 400 kHz SCK | 1 | 775 | 256.1 | 87% | 100% | 73% | 100% | SPI 100% |
-| SPI | 1 MHz SCK | 1 | 724 | 256.1 | 94% | 100% | 65% | 100% | SPI 100% |
-| SPI | 4 MHz SCK | 1 | 576 | 256.1 | 95% | 100% | 70% | 100% | SPI 100% |
-| SPI | 12.5 MHz SCK | 1 | 363 | 256.2 | 100% | 100% | 71% | 100% | SPI 100%, JTAG/SWD 0% |
-| I2C | 100 kHz SCL | 4, 1 | 712 | 247.7 | 97% | 100% | 2% | 100% | I2C 100%, JTAG/SWD 0% |
-| I2C | 400 kHz SCL | 1 | 780 | 256.0 | 100% | 100% | 17% | 100% | I2C 100% |
-| I2C | 1 MHz SCL | 1 | 743 | 256.0 | 98% | 99% | 35% | 100% | I2C 99%, PS/2 1% |
-| USB-LS | 1.5 Mbit/s | 1 | 764 | 256.0 | 91% | 100% | 0% | - | USB-LS 100%, JTAG/SWD 0% |
+| SPI | 100 kHz SCK | 1, 4 | 567 | 246.0 | 85% | 100% | 84% | 100% | SPI 100%, PS/2 0% |
+| SPI | 400 kHz SCK | 1 | 775 | 256.1 | 87% | 100% | 87% | 100% | SPI 100% |
+| SPI | 1 MHz SCK | 1 | 724 | 256.1 | 94% | 100% | 94% | 100% | SPI 100% |
+| SPI | 4 MHz SCK | 1 | 576 | 256.1 | 95% | 100% | 95% | 100% | SPI 100% |
+| SPI | 12.5 MHz SCK | 1 | 363 | 256.2 | 100% | 100% | 97% | 100% | SPI 100%, JTAG/SWD 0% |
+| I2C | 100 kHz SCL | 4, 1 | 712 | 247.7 | 97% | 100% | 97% | 100% | I2C 100%, JTAG/SWD 0% |
+| I2C | 400 kHz SCL | 1 | 780 | 256.0 | 100% | 100% | 100% | 100% | I2C 100% |
+| I2C | 1 MHz SCL | 1 | 743 | 256.0 | 98% | 99% | 97% | 100% | I2C 99%, PS/2 1% |
+| USB-LS | 1.5 Mbit/s | 1 | 764 | 256.0 | 91% | 100% | 79% | 100% | USB-LS 100%, JTAG/SWD 0% |
 | CAN | 125 kbit/s | 16, 4 | 685 | 253.3 | 99% | 93% | 0% | - | CAN 93%, UART 7% |
 | CAN | 250 kbit/s | 4 | 800 | 256.0 | 92% | 97% | 0% | - | CAN 97%, UART 3% |
 | CAN | 500 kbit/s | 1, 4 | 628 | 250.2 | 96% | 92% | 0% | - | CAN 92%, UART 7% |
 | CAN | 1 Mbit/s | 1 | 800 | 256.0 | 94% | 94% | 0% | - | CAN 94%, UART 6% |
-| JTAG/SWD | 100 kHz TCK | 1, 4 | 609 | 250.1 | 81% | 100% | 44% | 100% | JTAG/SWD 100%, SPI 0% |
-| JTAG/SWD | 1 MHz TCK | 1 | 721 | 256.2 | 98% | 100% | 54% | 100% | JTAG/SWD 100% |
-| JTAG/SWD | 8.3 MHz TCK | 1 | 437 | 256.2 | 100% | 99% | 67% | 100% | JTAG/SWD 99%, SPI 1% |
-| PS/2 | 10 kHz CLK | 64, 16 | 725 | 248.0 | 100% | 99% | 40% | 100% | PS/2 99%, UART 1% |
-| PS/2 | 16.7 kHz CLK | 16, 64 | 654 | 244.0 | 100% | 100% | 15% | 100% | PS/2 100% |
-| Manchester | 25 kbit/s | 16, 4 | 737 | 252.3 | 84% | 74% | 4% | 97% | Manchester 74%, CAN 16% |
-| Manchester | 100 kbit/s | 4, 1 | 736 | 253.0 | 88% | 82% | 8% | 100% | Manchester 82%, CAN 14% |
-| Manchester | 1 Mbit/s | 1 | 746 | 256.0 | 99% | 97% | 8% | 100% | Manchester 97%, CAN 1% |
-| Manchester | 6.25 Mbit/s | 1 | 560 | 256.0 | 91% | 82% | 14% | 100% | Manchester 82%, CAN 18% |
+| JTAG/SWD | 100 kHz TCK | 1, 4 | 609 | 250.1 | 81% | 100% | 43% | 100% | JTAG/SWD 100%, SPI 0% |
+| JTAG/SWD | 1 MHz TCK | 1 | 721 | 256.2 | 98% | 100% | 52% | 100% | JTAG/SWD 100% |
+| JTAG/SWD | 8.3 MHz TCK | 1 | 437 | 256.2 | 100% | 99% | 65% | 100% | JTAG/SWD 99%, SPI 1% |
+| PS/2 | 10 kHz CLK | 64, 16 | 725 | 248.0 | 100% | 99% | 90% | 100% | PS/2 99%, UART 1% |
+| PS/2 | 16.7 kHz CLK | 16, 64 | 654 | 244.0 | 100% | 100% | 95% | 100% | PS/2 100% |
+| Manchester | 25 kbit/s | 16, 4 | 737 | 252.3 | 84% | 74% | 7% | 96% | Manchester 74%, CAN 16% |
+| Manchester | 100 kbit/s | 4, 1 | 736 | 253.0 | 88% | 82% | 12% | 100% | Manchester 82%, CAN 14% |
+| Manchester | 1 Mbit/s | 1 | 746 | 256.0 | 99% | 97% | 10% | 100% | Manchester 97%, CAN 1% |
+| Manchester | 6.25 Mbit/s | 1 | 560 | 256.0 | 91% | 82% | 33% | 99% | Manchester 82%, CAN 18% |
 
 Prescaler: the cycles per tick chosen, most common first. At 1 cycle per tick a window lasts at most 1.3 ms; at 64, 84 ms, so a slow bus fills it with edges instead of closing it by time with a handful, which the activity gate (MIN_EDGES 24) would flag.
 
@@ -99,12 +101,12 @@ Each signal on one Ear pin (four pins for the random edges), filter in bypass, a
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | PWM, 20 kHz, 20% duty | no | low | 16 | 74 | 0% | 100% | CAN 74 |
 | PWM, 20 kHz, 20% duty | no | high | 16 | 74 | 0% | 100% | CAN 74 |
-| WS2812 LED data, 800 kHz | no | low | 1 | 135 | 0% | 0% | Manchester 135 |
-| WS2812 LED data, 800 kHz | no | high | 1 | 135 | 0% | 0% | Manchester 135 |
-| Random edges on 4 pins, mean 1 us | kind of | low | 1 | 388 | 94% | 0% | SPI 142, CAN 142 |
-| Random edges on 4 pins, mean 1 us | kind of | high | 1 | 388 | 94% | 0% | SPI 142, CAN 142 |
-| Random edges on 4 pins, mean 20 us | kind of | low | 1 | 23 | 13% | 13% | CAN 22, SPI 1 |
-| Random edges on 4 pins, mean 20 us | kind of | high | 1 | 23 | 13% | 13% | CAN 22, SPI 1 |
+| WS2812 LED data, 800 kHz | no | low | 1 | 135 | 0% | 16% | Manchester 135 |
+| WS2812 LED data, 800 kHz | no | high | 1 | 135 | 0% | 16% | Manchester 135 |
+| Random edges on 4 pins, mean 1 us | kind of | low | 1 | 388 | 94% | 2% | SPI 142, CAN 142 |
+| Random edges on 4 pins, mean 1 us | kind of | high | 1 | 388 | 94% | 2% | SPI 142, CAN 142 |
+| Random edges on 4 pins, mean 20 us | kind of | low | 1 | 23 | 13% | 9% | CAN 22, SPI 1 |
+| Random edges on 4 pins, mean 20 us | kind of | high | 1 | 23 | 13% | 9% | CAN 22, SPI 1 |
 | Clock, 1 MHz | kind of | low | 1 | 213 | 0% | 0% | Manchester 213 |
 | Clock, 1 MHz | kind of | high | 1 | 213 | 0% | 0% | Manchester 213 |
 | Random edges on 1 pin, mean 1 us | kind of | low | 1 | 110 | 0% | 0% | UART 71, Manchester 34 |
@@ -112,7 +114,7 @@ Each signal on one Ear pin (four pins for the random edges), filter in bypass, a
 
 ## Classes held out of training
 
-The model trained on UART, SPI, I2C, USB-LS, CAN, Manchester only (the second section above: 93.8% test accuracy, MARGIN 255, FLOOR 74), run on held-out JTAG/SWD and PS/2 windows (build(50, 1001)).
+The model trained on UART, SPI, I2C, USB-LS, CAN, Manchester only (the second section above: 93.8% test accuracy, MARGIN 255, per-class 255/255/255/255/255/255/255/255, FLOOR 74), run on held-out JTAG/SWD and PS/2 windows (build(50, 1001)).
 
 | Held-out class | Windows | Floor flag | Confident | Confident calls |
 | --- | --- | --- | --- | --- |

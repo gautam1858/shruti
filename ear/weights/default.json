@@ -3,7 +3,17 @@
     "shift": 2,
     "margin": 56,
     "floor": 51,
-    "min_edges": 24
+    "min_edges": 24,
+    "margins": [
+      44,
+      9,
+      10,
+      25,
+      59,
+      57,
+      23,
+      47
+    ]
   },
   "report": {
     "classes": [
@@ -124,8 +134,8 @@
         282
       ]
     ],
-    "confident_rate": 0.2127,
-    "confident_accuracy": 1.0,
+    "confident_rate": 0.5767,
+    "confident_accuracy": 0.9994,
     "ood_known": 0.0468,
     "ood_unknown": null,
     "recall": {
@@ -139,6 +149,16 @@
       "Manchester": 0.8368
     },
     "balanced_accuracy": 0.9437,
-    "foreign_confident": 0.07
+    "foreign_confident": 0.105,
+    "margins": [
+      44,
+      9,
+      10,
+      25,
+      59,
+      57,
+      23,
+      47
+    ]
   }
 }

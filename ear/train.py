@@ -437,6 +437,9 @@ def report_markdown(r: Report, title: str) -> str:
               "and together at most 5% of foreign validation windows are confident; MARGIN "
               "alone (one margin for every class, for a host that writes only EAR_MARGIN) is "
               "the smallest giving the same on all classes at once"
+              if r.margins and any(m < 255 for m in r.margins) else
+              "- Per-class MARGIN (EAR_MARGIN_K): 255 for every class: no margins met 99% on "
+              "every class with at most 5% of foreign validation windows confident"
               if r.margins else
               "- MARGIN is the smallest margin giving 99% on validation with at most 5% of "
               "foreign validation windows confident"),

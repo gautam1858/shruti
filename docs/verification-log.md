@@ -53,6 +53,7 @@ Ear training (Phase B, Nov 2026). Design findings, not bugs; ear/REPORT.md has t
 - Gradient training underfit: the ternary integer models reached only 84-90% on their own training data, against 97.8% for a float network of the same size. Found by comparing training and test accuracy; fixed by an exact search on the integer model (ear/train.py, refine).
 - Model selection was noise: with 60 UART validation windows, the restart picked by validation accuracy had 19% UART recall while others reached 82%. Fixed by 400 captures per class and selection on balanced validation accuracy.
 - The more accurate model stopped abstaining on foreign traffic: confident on 95-100% of PWM and random-edge windows and 60-68% of held-out PS/2 and JTAG/SWD, where the first model abstained. Found by ear/evaluate.py's probes. Training against foreign windows cost too much accuracy; MARGIN is now calibrated against them instead. Left open: a 20 kHz PWM is still confidently called CAN, and at the shipped MARGIN UART, CAN and USB-LS are never confident.
+- One margin for every class was set by the classes with the most confident mistakes, and USB-LS, CAN and UART paid for it. Per-class margins (EAR_MARGIN_K) were tried in Python on the shipped weights before any RTL: confident test windows went from 21% to 58% at 99.9% right. Found afterwards, when training reported the foreign rate on the confident bit alone (the experiment had also required the floor): held-out foreign windows are confident 10.5% of the time against the 5% the margins were fitted to, because eight margins overfit a budget of 30 calibration windows. Left open: CAN, which a 20 kHz PWM out-scores, and UART across the swept baud rates.
 
 Flow (local tools, Phase B)
 - Icarus Verilog 12 does not drive the delayed signals of the CMOS5L flip-flop models' timing checks, so in a local gate-level run every flip-flop stays unknown and every test fails. A local copy of the models with those signals assigned from their pins runs the Event Machine tests, but the gate-level Ear tests did not finish in this container; Phase B's gate-level evidence is CI's gl_test on the routed netlist.
@@ -168,3 +169,13 @@ Ear prescaler (src/shruti_ear.v, Phase B), each bug planted alone against the pr
 | Interval counter counts cycles instead of ticks | prescaler at 4, 16 and 64 against the reference |
 | Time limit closes one tick early (no tick condition) | prescaled window closing after 65,536 ticks |
 | Prescaler not restarted with the window | prescaler at 4, 16 and 64 against the reference |
+
+Per-class margins (src/shruti_ear.v, Phase C), each bug planted alone. The random-weight test missed the first two: its random margins sit far below the gaps of random weights, so every window is confident whichever margin is used. `ear_per_class_margins_match_reference`, which places each class's margin at a window's own gap, was written to catch them.
+
+| Planted bug | Caught by |
+| --- | --- |
+| Confidence compared against class 0's margin | per-class margins at the windows' gaps |
+| Confidence compared against the margin of the last output computed, not the best class | per-class margins at the windows' gaps |
+| gap > margin instead of gap >= margin | per-class margins at the windows' gaps |
+| EAR_MARGIN sets only class 0 | margin registers |
+| EAR_MARGIN_K writes the wrong class | margin registers |
