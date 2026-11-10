@@ -35,3 +35,7 @@ test/pytest-results.xml
 # SymbiYosys work directories
 verify/em/
 verify/em_*/
+verify/ear/
+verify/ear_layer1/
+verify/ear_layer2/
+verify/ear_argmax/

@@ -1,0 +1,32 @@
+# The Ear's classifier datapath against its specification (verify/ear_formal.v), for every
+# weight, feature, threshold, shift, margin and floor. Run from this directory:
+#   sby -f ear.sby          all three
+#   sby -f ear.sby layer1   (or layer2, argmax) one of them
+# layer1 and layer2 are proved by k-induction on the running sum. argmax is a finite sequence
+# from its first cycle, so bounded model checking one step past its end covers every state it
+# can reach. All three are proofs for every input, not samples.
+[tasks]
+layer1
+layer2
+argmax
+
+[options]
+layer1: mode prove
+layer1: depth 5
+layer2: mode prove
+layer2: depth 2
+argmax: mode bmc
+argmax: depth 10
+
+[engines]
+smtbmc z3
+
+[script]
+read_verilog -formal -sv shruti_ear.v ear_formal.v
+layer1: prep -top ear_layer1_dot
+layer2: prep -top ear_layer2_dot
+argmax: prep -top ear_argmax_spec
+
+[files]
+../src/shruti_ear.v
+ear_formal.v
