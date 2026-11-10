@@ -4,7 +4,7 @@
 
 Shruti (Sanskrit: "that which is heard") is an open-source protocol emulator chip for Tiny Tapeout (IHP 130nm CMOS5L, 8x4 tiles), built for the [Jane Street protocol emulator ASIC competition](https://blog.janestreet.com/protocol-emulator-asic-competition/). It speaks UART, SPI and I2C from firmware, and it listens: an on-die ternary classifier names a bus it was trained on from its edge timing, says when it is confident, and can be retrained after fabrication.
 
-**Target** Tiny Tapeout 8x4, IHP 130nm CMOS5L · **Clock** 50 MHz (40 or 60 MHz if Ethernet is attempted), 24 MHz fallback · **Logic** 27,789 cells and 4,396 flip-flops synthesised, 68.6% placed utilisation at 6x4, timing met at 50 MHz (commit fcafc0b; Watch not yet in; the first 8x4 run is pending), flip-flops only · **Submission** 12 Jan 2027 for the 18 Jan deadline · **Licence** Apache-2.0
+**Target** Tiny Tapeout 8x4, IHP 130nm CMOS5L · **Clock** 50 MHz (40 or 60 MHz if Ethernet is attempted), 24 MHz fallback · **Logic** 32,802 cells synthesised, 51.3% placed utilisation at 8x4, timing met at 50 MHz with +5.2 ns at the slow corner (commit f45ddf0; Watch not yet in), flip-flops only · **Submission** 12 Jan 2027 for the 18 Jan deadline · **Licence** Apache-2.0
 
 Full design: [docs/architecture-spec.md](docs/architecture-spec.md).
 
@@ -45,7 +45,7 @@ The Event Machines cannot issue an instruction per half-bit at 10 Mbit/s, so Eth
 ## Silicon realities
 
 - I/O: all 24 Tiny Tapeout signals. 8 bidirectional bus pins (`uio`) with per-pin open-drain mode for I2C and 1-Wire (CAN goes through an external transceiver), 4 input-only monitor pins, a 3-wire host SPI, trigger-in, and outputs for MISO, IRQ, trigger-out, the class LEDs and the two flags. The demo board's RP2040 is the host.
-- Memory first: all state in flip-flops. Measured at commit fcafc0b: 4,396 flip-flops and 27,789 cells synthesised for the Event Machines, program memory, input path, host SPI and the Ear; 619,342 um2 of cells, 68.6% of the 6x4 core after placement, with 50 MHz met at all corners. Watch has to fit in the rest. IHP SRAM macros are allowed and can be powered on Metal4 (spec section 8); putting the Ear's weights and Watch's recorder in macros is planned and will be measured on a GDS run.
+- Memory first: all state in flip-flops. Measured at commit fcafc0b: 4,396 flip-flops and 27,789 cells synthesised for the Event Machines, program memory, input path, host SPI and the Ear; 619,342 um2 of cells, 68.6% of the 6x4 core after placement, with 50 MHz met at all corners. At 8x4, commit f45ddf0 (with the prescaler and class pins, and synthesis set back to the area strategy the 6x4 runs used): 32,802 cells, 620,146 um2, 51.3% of the core, +5.2 ns of setup slack at the slow corner. Watch has to fit in the rest. IHP SRAM macros are allowed and can be powered on Metal4 (spec section 8); putting the Ear's weights and Watch's recorder in macros is planned and will be measured on a GDS run.
 - Glitch filter: per pin, fully synchronous, configurable (bypass, 2-of-3 or 3-of-5 majority). 3-of-5 rejects pulses under 60 ns at 50 MHz and suits buses up to a few MHz; faster clocks use 2-of-3 or bypass. No analog delay lines: nothing to calibrate, and it can be formally checked.
 
 ## Verification
