@@ -108,7 +108,9 @@ def check(m: Dict[str, float], hold_target: float = 0.05,
                 v.failures.append(f"{int(n)} {what}")
             v.rows.append([what[0].upper() + what[1:], str(int(n)), ""])
     for key, what in [("magic__drc_error__count", "Magic DRC errors"),
-                      ("design__lvs_error__count", "LVS errors")]:
+                      ("magic__illegal_overlap__count", "illegal overlaps"),
+                      ("design__lvs_error__count", "LVS errors"),
+                      ("design__instance_unmapped__count", "unmapped instances")]:
         if key in m:                       # not every flow configuration runs these
             n = float(m[key])
             if n > 0:

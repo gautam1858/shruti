@@ -58,6 +58,8 @@ def test_single_problems_are_caught():
         "antenna__violating__nets": 1,
         "magic__drc_error__count": 3,
         "design__lvs_error__count": 1,
+        "magic__illegal_overlap__count": 1,
+        "design__instance_unmapped__count": 4,
         "timing__hold_vio__count__corner:nom_typ_1p20V_25C": 2,
     }
     for key, value in cases.items():
