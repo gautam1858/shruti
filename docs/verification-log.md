@@ -60,6 +60,9 @@ Ear training (Phase B, Nov 2026). Design findings, not bugs; ear/REPORT.md has t
 Flow (local tools, Phase B)
 - Icarus Verilog 12 does not drive the delayed signals of the CMOS5L flip-flop models' timing checks, so in a local gate-level run every flip-flop stays unknown and every test fails. A local copy of the models with those signals assigned from their pins runs the Event Machine tests, but the gate-level Ear tests did not finish in this container; Phase B's gate-level evidence is CI's gl_test on the routed netlist.
 
+Watch on the routed netlist (CI gl_test, commit a451cee)
+- `watch_matches_reference` failed at gate level, not because the netlist disagreed with the reference (it matched on every check) but because at gate level the test runs one random case, and that case never froze the recorder, which the test requires. Fixed with a fifth case that always freezes (trigger-in, every pin recorded, POST 3), which is the one gate level runs; the four random cases are unchanged and still catch their planted bugs.
+
 Watch (found while writing the reference, Phase C)
 - A host trigger cleared itself: CTRL's TRIG bit and its clear of TRIGGERED landed in the same write, and the write won. Found by the model's own unit test of the host trigger, before any RTL. A CTRL write with TRIG set now only triggers (watch/SPEC.md).
 

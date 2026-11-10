@@ -4,7 +4,7 @@
 
 Shruti (Sanskrit: "that which is heard") is an open-source protocol emulator chip for Tiny Tapeout (IHP 130nm CMOS5L, 8x4 tiles), built for the [Jane Street protocol emulator ASIC competition](https://blog.janestreet.com/protocol-emulator-asic-competition/). It speaks UART, SPI and I2C from firmware, and it listens: an on-die ternary classifier names a bus it was trained on from its edge timing, says when it is confident, and can be retrained after fabrication.
 
-**Target** Tiny Tapeout 8x4, IHP 130nm CMOS5L · **Clock** 50 MHz (40 or 60 MHz if Ethernet is attempted), 24 MHz fallback · **Logic** 32,802 cells synthesised, 51.3% placed utilisation at 8x4, timing met at 50 MHz with +5.2 ns at the slow corner (commit f45ddf0; Watch not yet in), flip-flops only · **Submission** 12 Jan 2027 for the 18 Jan deadline · **Licence** Apache-2.0
+**Target** Tiny Tapeout 8x4, IHP 130nm CMOS5L · **Clock** 50 MHz (40 or 60 MHz if Ethernet is attempted), 24 MHz fallback · **Logic** 37,094 cells synthesised, 58.2% placed utilisation at 8x4, timing met at 50 MHz with +5.3 ns at the slow corner (commit a451cee, Watch at the cut level in), flip-flops only · **Submission** 12 Jan 2027 for the 18 Jan deadline · **Licence** Apache-2.0
 
 Full design: [docs/architecture-spec.md](docs/architecture-spec.md).
 
@@ -30,7 +30,7 @@ Hardware compresses a 256-edge window into 72 speed-invariant features: log2-dom
 
 ## Watch: a protocol trigger with a flight recorder
 
-**Built at the cut level** (`src/shruti_watch.v`, `watch/SPEC.md`): 2 rule monitors and a 16-entry recorder; the full size (4 monitors, 32 entries) waits on the area its GDS run leaves.
+**Built at the cut level** (`src/shruti_watch.v`, `watch/SPEC.md`): 2 rule monitors and a 16-entry recorder, 73,965 um2 at 50 MHz. The full size (4 monitors, 32 entries) would leave too little room under the 65% utilisation ceiling, so it is not planned.
 
 Each host-configured rule monitor matches an edge on one pin, a guard over the 12-pin snapshot and bounds on the interval since that pin's last edge, for example "a UART pulse shorter than half a bit" or "an edge on MOSI while SCK is high". A match counts, can trigger, and can set a SYNC flag for the Event Machines. A rule, the Ear's unknown flag rising, a change of the Ear's class pins, a trigger-in edge or the host triggers the recorder: it keeps up to 15 more entries and freezes, raises IRQ and drives trigger-out for a scope. Each entry is a timestamp and the levels of all 12 pins, so edges on several pins in the same cycle are kept together. Rules catch the violation you can name; the Ear is meant to catch the traffic you cannot, though its unknown flag does not do that reliably yet (Known limitations). Watch observes only; nothing in Shruti alters the bus.
 
@@ -73,7 +73,7 @@ Every line names its evidence; the GitHub Actions in `.github/workflows` run all
 - **The Ear in RTL:** 72 features, canonical pin order, a ternary 72-8-8 MLP, the weight ring and HOLD-mode readback; a timebase prescaler of 1, 4, 16 or 64 cycles per tick (`EAR_CFG`) so slow buses fill their windows, and class pins that hold the last confident answer. Bit-exact to `ear/features.py` and `ear/mlp.py` in class, flags and their timing on every window, and in all 72 features read back over SPI (`test/test.py`, the tests starting `ear_`).
 - **Watch at the cut level:** 2 rule monitors, the trigger and a 16-entry recorder, cycle-exact to `watch/model.py`. Checked every cycle (trigger-out and IRQ) and then register by register, SYNC flag by flag and byte by byte of the recorder, on random monitors, sources and edges across all 12 pins and trigger-in, on the Ear's OOD and class-pin sources with the trained weights, and on the host trigger, freeze and re-arm (`test/test.py`, the tests starting `watch_`), with hand-counted rules besides. 15 planted bugs, each caught; the random co-simulation alone missed five, which the directed tests were written for (`docs/verification-log.md`).
 - **Gate level:** the cocotb tests on the routed netlist, 11 passing and 2 RTL-only skipped (`gl_test` job).
-- **Physical, 8x4:** 50 MHz met at all three corners, slow-corner setup slack +5.15 ns, 52.1% utilisation, 0 DRC, 0 antenna and 0 LVS errors, precheck passing (commit 8e0ce51, before Watch). The `signoff` job fails the build on negative slack, DRC, antenna, LVS, illegal-overlap or unmapped-cell errors, and warns on slew, cap and fanout (`verify/signoff.py`).
+- **Physical, 8x4, with Watch:** 50 MHz met at all three corners, slow-corner setup slack +5.30 ns, 58.2% utilisation (703,027 um2 of cells), 0 DRC, 0 antenna and 0 LVS errors (commit a451cee); Watch at the cut level costs 73,965 um2. The `signoff` job fails the build on negative slack, DRC, antenna, LVS, illegal-overlap or unmapped-cell errors, and warns on slew, cap and fanout (`verify/signoff.py`).
 - **ISS** (`iss/`), generated from `isa/isa.yaml`: every instruction and scheduler rule (`iss/tests`).
 - **Assembler and disassembler** (`asm/`): round trip over all 65,536 words; conditional assembly and `-D` overrides, so one source builds every SPI mode.
 - **Firmware** (`fw/`), on Tiny Tapeout's recommended Pmod pinouts (either row): UART transmit and receive at every common baud rate from 300 to 3 Mbaud, SPI master and slave in each of modes 0-3, I2C master at 100 and 400 kHz, and an I2C target that receives writes (the host answers each ACK), each tested on the ISS against a model of the peer device, with injected faults (`fw/tests`). Controller and target roles both exist for SPI and I2C, and two protocols run at once, one per EM and Pmod row (`test_two_protocols_at_once`).
@@ -83,7 +83,7 @@ Every line names its evidence; the GitHub Actions in `.github/workflows` run all
 ### Planned
 
 Dates from the spec's milestones:
-- Watch at full size (4 monitors, a 32-entry recorder), if the area allows: checkpoint 29 Nov 2026.
+- Watch at full size (4 monitors, a 32-entry recorder): not planned. The cut level took 73,965 um2 and 6.1 points of utilisation; doubling it would leave under 1 point below the 65% ceiling.
 - FPGA bring-up on a Tang Nano 20K against a USB-UART adapter, an SPI flash and an I2C sensor: 6 Dec 2026. The bitstream builds (60% of LUTs, 70 MHz estimated, `fpga/README.md`); nothing has run on a board yet.
 - The classifier proof; formal properties for edge capture and the recorder; a bounded equivalence check of the Event Machine against an ISS transliteration: 13 Dec 2026.
 - Confident answers for CAN, which per-class margins do not give (a 20 kHz PWM looks more like CAN than CAN does), and for UART across its baud range: training or features, before the feature freeze, 20 Dec 2026.

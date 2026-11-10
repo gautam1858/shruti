@@ -834,11 +834,14 @@ async def watch_matches_reference(dut):
     chip = await new_chip(dut)
     rng = random.Random(41)
     froze = 0
-    for _ in range(4 if not GATES else 1):
+    for case in (range(5) if not GATES else [4]):   # gate level: the case that freezes
         run = WatchRun()
         await run.start(chip)
         hot = rng.sample(range(12), 4)
         for addr, d in random_watch_config(rng, hot):
+            if case == 4:                        # one case that surely freezes: trigger-in,
+                d = {WATCH_SRC: d | watchm.SRC_EXT,  # every pin recorded, 3 entries after
+                     WATCH_POST: 3, 0xE8: 0xFF, 0xE9: 0x0F}.get(addr, d)
             await run.write(addr, d)
         await run.write(WATCH_CTRL, 1)
         level = {p: 1 for p in range(12)}
