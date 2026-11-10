@@ -6,7 +6,8 @@ import pytest
 from ear import protosim as ps
 from ear.dataset import build
 from ear.mlp import Model
-from ear.train import (TrainConfig, _class_weights, _fit_tau, _xent, calibrate, int_logits,
+from ear.train import (TrainConfig, _class_weights, _fit_tau, _xent, calibrate, calibrate_classes,
+                       int_logits,
                        load, predict, refine, save, train, ternarize)
 
 
@@ -69,6 +70,25 @@ def test_calibrate_margin_is_the_smallest_meeting_the_precision():
     foreign[:, 3] = np.arange(20)
     margin, _ = calibrate(logits, y, np.full(40, 256), precision=0.99, foreign=foreign)
     assert margin == 19 and np.mean(np.arange(20) >= margin) <= 0.05
+
+
+def test_per_class_margins_meet_each_precision_and_share_the_foreign_budget():
+    # Class 1 is right only from a gap of 10; class 4 is always right. Twenty foreign
+    # windows look like class 1 with gaps 0..19, and at most 5% (one) may be confident.
+    gaps = np.arange(40)
+    logits = np.zeros((80, 8), dtype=int)
+    logits[:40, 1] = gaps
+    logits[40:, 4] = gaps
+    y = np.concatenate([np.where(gaps >= 10, 1, 2), np.full(40, 4)])
+    foreign = np.zeros((20, 8), dtype=int)
+    foreign[:, 1] = np.arange(20)
+    m = calibrate_classes(logits, y, 0.99, foreign, 0.05)
+    assert m[1] == 19 and m[4] == 0                  # one global margin would be 19 for both
+    global_m, _ = calibrate(logits, y, np.full(80, 256), precision=0.99, foreign=foreign)
+    assert global_m == 19
+    # No margins can meet a budget of zero foreign windows when one has a gap of 255.
+    foreign[0, 1] = 300
+    assert calibrate_classes(logits, y, 0.99, foreign[:10], 0.05) == [255] * 8
 
 
 def test_auto_prescale_picks_the_smallest_tick_that_fills_a_window():

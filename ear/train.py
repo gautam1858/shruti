@@ -66,6 +66,7 @@ class TrainConfig:
     precision: float = 0.99             # MARGIN target: precision of confident windows
     foreign: int = 200                  # foreign captures for MARGIN (0: none), half held out
     foreign_rate: float = 0.05          # MARGIN target: confident share of foreign windows
+    per_class_margins: bool = True      # also calibrate one margin per class (EAR_MARGIN_K)
 
 
 def _scaled(w: np.ndarray) -> Tuple[np.ndarray, float]:
@@ -276,6 +277,50 @@ def calibrate(logits: np.ndarray, y: np.ndarray, edges: np.ndarray,
     return margin, max(-2048, min(2047, floor))
 
 
+def calibrate_classes(logits: np.ndarray, y: np.ndarray, precision: float = 0.99,
+                      foreign: Optional[np.ndarray] = None, foreign_rate: float = 0.05
+                      ) -> List[int]:
+    """Per-class MARGIN (EAR_MARGIN_K): class k's margin is one at which the validation
+    windows called k with at least that margin are at least `precision` right. Together the
+    eight let at most `foreign_rate` of the foreign windows be confident; within that budget
+    they maximise the mean over classes of the share of each class's windows that are
+    confident and right (an exact search over classes, a knapsack on foreign windows). A
+    class with no acceptable margin gets 255, the most a register holds, and so does every
+    class if no choice meets the foreign budget."""
+    gap, pred = margins(logits), predict(logits)
+    fgap = margins(foreign) if foreign is not None and len(foreign) else np.zeros(0, np.int64)
+    fpred = predict(foreign) if len(fgap) else np.zeros(0, np.int64)
+    budget = int(np.floor(foreign_rate * len(fgap)))
+    options = []                                   # per class: (margin, foreign cost, value)
+    for k in range(CLASSES_N):
+        n_k = max(1, int(np.sum(y == k)))
+        opts = []
+        for m in range(256):
+            c = (pred == k) & (gap >= m)
+            if c.any() and np.mean(y[c] == k) < precision:
+                continue
+            opts.append((m, int(np.sum((fpred == k) & (fgap >= m))),
+                         float(np.sum(c & (y == k))) / n_k))
+        options.append(opts or [(255, int(np.sum((fpred == k) & (fgap >= 255))), 0.0)])
+    best = np.full((CLASSES_N + 1, budget + 1), -np.inf)
+    best[0, :] = 0.0
+    pick = np.zeros((CLASSES_N, budget + 1), dtype=np.int64)
+    for k, opts in enumerate(options):
+        for b in range(budget + 1):
+            for i, (_, cost, value) in enumerate(opts):
+                if cost <= b and best[k, b - cost] + value > best[k + 1, b]:
+                    best[k + 1, b] = best[k, b - cost] + value
+                    pick[k, b] = i
+    out, b = [255] * CLASSES_N, int(np.argmax(best[CLASSES_N]))
+    if not np.isfinite(best[CLASSES_N, b]):        # no margins meet the foreign budget:
+        return out                                 # 255 for all, as calibrate() does
+    for k in reversed(range(CLASSES_N)):
+        m, cost, _ = options[k][pick[k, b]]
+        out[k] = m
+        b -= cost
+    return out
+
+
 @dataclass
 class Report:
     classes: List[str]
@@ -295,6 +340,7 @@ class Report:
     recall: Optional[Dict[str, float]] = None      # per trained class, on the test set
     balanced_accuracy: Optional[float] = None      # mean of recall, on the test set
     foreign_confident: Optional[float] = None      # confident share of held-out foreign windows
+    margins: Optional[List[int]] = None            # per-class MARGIN (EAR_MARGIN_K), if used
 
 
 def train(captures_per_class: int = 60, seed: int = 1, classes: Sequence[str] = ps.CLASSES,
@@ -322,11 +368,14 @@ def train(captures_per_class: int = 60, seed: int = 1, classes: Sequence[str] = 
         Xf, gf = np.array(fds.X, dtype=np.int64).reshape(-1, 72), np.array(fds.group)
         Fcal = int_logits(T1, T2, Xf[gf % 2 == 0], shift, bias)
         Fte = int_logits(T1, T2, Xf[gf % 2 == 1], shift, bias)
-    margin, floor = calibrate(int_logits(T1, T2, Xva, shift, bias), yva, eva,
-                              precision=tc.precision, foreign=Fcal,
+    Lva = int_logits(T1, T2, Xva, shift, bias)
+    margin, floor = calibrate(Lva, yva, eva, precision=tc.precision, foreign=Fcal,
                               foreign_rate=tc.foreign_rate)
-    model = Model(T1.tolist(), T2.tolist(), Config(shift, margin, floor, MIN_EDGES),
+    per_class = (calibrate_classes(Lva, yva, tc.precision, Fcal, tc.foreign_rate)
+                 if tc.per_class_margins else None)
+    model = Model(T1.tolist(), T2.tolist(), Config(shift, margin, floor, MIN_EDGES, per_class),
                   [int(b) for b in bias])
+    mvec = np.array(per_class if per_class else [margin] * CLASSES_N)
 
     lt = int_logits(T1, T2, Xte, shift, bias)
     pred = predict(lt)
@@ -334,7 +383,7 @@ def train(captures_per_class: int = 60, seed: int = 1, classes: Sequence[str] = 
     for t, p in zip(yte, pred):
         conf[t, p] += 1
     srt = np.sort(lt, axis=1)
-    confident = (srt[:, -1] - srt[:, -2]) >= margin
+    confident = (srt[:, -1] - srt[:, -2]) >= mvec[pred]
     ood = (srt[:, -1] < floor) | (ete < MIN_EDGES)
     ood_unknown = None
     if unknown:
@@ -354,7 +403,9 @@ def train(captures_per_class: int = 60, seed: int = 1, classes: Sequence[str] = 
                                        == ps.CLASSES.index(c))), 4)
                 for c in classes if np.any(yte == ps.CLASSES.index(c))},
         balanced_accuracy=round(balanced_accuracy(pred, yte), 4),
-        foreign_confident=None if Fte is None else round(float(np.mean(margins(Fte) >= margin)), 4))
+        foreign_confident=None if Fte is None else round(float(np.mean(
+            margins(Fte) >= mvec[predict(Fte)])), 4),
+        margins=per_class)
     return model, report
 
 
@@ -380,9 +431,17 @@ def report_markdown(r: Report, title: str) -> str:
                 else ""),
              f"- Configuration: SHIFT {r.shift}, MARGIN {r.margin}, FLOOR {r.floor}, "
              f"MIN_EDGES {r.min_edges}",
+             (f"- Per-class MARGIN (EAR_MARGIN_K): "
+              + ", ".join(f"{names[k]} {m}" for k, m in enumerate(r.margins))
+              + ". Each class is at least 99% right among its confident validation windows, "
+              "and together at most 5% of foreign validation windows are confident; MARGIN "
+              "alone (one margin for every class, for a host that writes only EAR_MARGIN) is "
+              "the smallest giving the same on all classes at once"
+              if r.margins else
+              "- MARGIN is the smallest margin giving 99% on validation with at most 5% of "
+              "foreign validation windows confident"),
              f"- Confident on {r.confident_rate:.1%} of test windows; accuracy when confident "
-             f"{r.confident_accuracy:.1%} (MARGIN is the smallest margin giving 99% on "
-             f"validation with at most 5% of foreign validation windows confident)",
+             f"{r.confident_accuracy:.1%}",
              f"- OOD flag rate on trained classes (false alarms): {r.ood_known:.1%}"]
     if r.ood_unknown is not None:
         lines.append(f"- OOD flag rate on classes held out of training: {r.ood_unknown:.1%}")

@@ -414,7 +414,7 @@ async def input_path_matches_reference_model(dut):
 import json  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-from harness import EAR_BEST, EAR_CFG, EAR_FEATURES, EAR_RESULT  # noqa: E402
+from harness import EAR_BEST, EAR_CFG, EAR_FEATURES, EAR_MARGIN, EAR_MARGIN_K, EAR_RESULT  # noqa: E402
 
 from ear import protosim  # noqa: E402
 from ear.features import extract  # noqa: E402
@@ -433,7 +433,8 @@ def random_model(rng):
     w = lambda: rng.choice([0, 0, 1, -1])
     return Model([[w() for _ in range(72)] for _ in range(8)], [[w() for _ in range(8)] for _ in range(8)],
                  Config(shift=rng.randrange(7), margin=rng.randrange(40),
-                        floor=rng.randrange(-200, 200), min_edges=rng.randrange(0, 257)),
+                        floor=rng.randrange(-200, 200), min_edges=rng.randrange(0, 257),
+                        margins=[rng.randrange(40) for _ in range(8)]),
                  [rng.randrange(-128, 128) for _ in range(8)])
 
 
@@ -547,6 +548,46 @@ async def ear_prescaler_matches_reference(dut):
     assert total >= (3 if not GATES else 1)
     await chip.write(EAR_CFG, [2])
     assert (await chip.read(EAR_CFG))[0] == 2, "EAR_CFG reads back"
+
+
+@cocotb.test()
+async def ear_per_class_margins_match_reference(dut):
+    """Per-class margins at the windows' own gaps: a class's margin is the gap of the first
+    window the reference calls that class, plus one for even classes, and 255 for classes no
+    window is called. A window's confidence then depends on which class's margin the
+    hardware compares, to the last unit."""
+    chip = await new_chip(dut)
+    rng = random.Random(33)
+    total = 0
+    for _ in range(3 if not GATES else 1):
+        model = random_model(rng)
+        cycles = 30000
+        pad = random_pad_edges(rng, cycles)
+        edges = filter_pins([1] * 4, [(c + 20, p, v) for c, p, v in pad if c + 20 < cycles], 0)
+        gaps = {}
+        for w in extract([1] * 4, edges, cycles):
+            r = model.infer(w.features, w.edges)
+            top = sorted(r.logits)
+            gaps.setdefault(r.cls, []).append(top[-1] - top[-2])
+        model.cfg.margins = [min(255, gaps[k][0] + (k % 2 == 0)) if k in gaps else 255
+                             for k in range(8)]
+        conf = [g >= model.cfg.margins[k] for k, gs in gaps.items() for g in gs]
+        assert any(conf) and not all(conf), "margins should split the windows"
+        total += await ear_case(chip, model, pad, cycles)
+    assert total >= (6 if not GATES else 2)
+
+@cocotb.test()
+async def ear_margin_registers(dut):
+    """EAR_MARGIN sets all eight per-class margins, as a host written for one margin expects;
+    EAR_MARGIN_K sets one class's; both read back."""
+    chip = await new_chip(dut)
+    assert await chip.read(EAR_MARGIN_K, 8) == [8] * 8, "reset: every margin 8"
+    await chip.write(EAR_MARGIN, [77])
+    assert await chip.read(EAR_MARGIN_K, 8) == [77] * 8, "EAR_MARGIN sets every class"
+    want = [3, 250, 0, 41, 17, 99, 128, 6]
+    await chip.write(EAR_MARGIN_K, want)
+    assert await chip.read(EAR_MARGIN_K, 8) == want
+    assert (await chip.read(EAR_MARGIN))[0] == want[0], "EAR_MARGIN reads class 0's"
 
 
 @cocotb.test(skip=GATES)

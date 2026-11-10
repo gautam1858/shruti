@@ -4,7 +4,7 @@
     h_j    = min(255, max(0, acc_j) >> SHIFT)  8-bit
     o_k    = sum_j W2[k][j] * h_j             12-bit signed, k = 0..7
     class  = argmax_k o_k (lowest k on ties)
-    confident = best - second_best >= MARGIN
+    confident = best - second_best >= MARGIN[class]   (one margin per class; EAR_MARGIN sets all 8)
     ood       = best < FLOOR  or  window edges < MIN_EDGES
 
 Weights are ternary, 2 bits each: 00 = 0, 01 = +1, 11 = -1 (10 is treated as 0 and flagged).
@@ -19,7 +19,7 @@ Pure Python, no dependencies.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 from .features import N_FEATURES
 
@@ -34,9 +34,13 @@ _DEC = {0b00: 0, 0b01: 1, 0b11: -1, 0b10: 0}
 @dataclass
 class Config:
     shift: int = 4          # 0..15
-    margin: int = 8         # 0..255
+    margin: int = 8         # 0..255, every class's margin unless `margins` is given
     floor: int = 0          # signed 12-bit
     min_edges: int = 24     # 0..256, activity gate
+    margins: Optional[List[int]] = None   # per class, 0..255 each (EAR_MARGIN_K)
+
+    def margin_of(self, k: int) -> int:
+        return self.margin if self.margins is None else self.margins[k]
 
 
 @dataclass
@@ -66,7 +70,7 @@ class Model:
         best_k = max(range(CLASSES_N), key=lambda k: (logits[k], -k))
         best = logits[best_k]
         second = max(v for k, v in enumerate(logits) if k != best_k)
-        return Result(best_k, best - second >= self.cfg.margin,
+        return Result(best_k, best - second >= self.cfg.margin_of(best_k),
                       best < self.cfg.floor or edges < self.cfg.min_edges, logits, hidden)
 
     @staticmethod

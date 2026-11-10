@@ -59,7 +59,7 @@ The classifier is a ternary MLP with 72 inputs, 8 hidden units and 8 outputs, an
 acc_j = B[j] + sum_i W1[j][i] * f[i]       16-bit signed (|acc| <= 128 + 72 * 63 = 4,664)
 h_j   = min(255, max(0, acc_j) >> SHIFT)   8-bit
 o_k   = sum_j W2[k][j] * h_j               12-bit signed
-class = argmax o_k, lowest k on ties;  confident = best - second >= MARGIN
+class = argmax o_k, lowest k on ties;  confident = best - second >= MARGIN[class]
 ood   = best < FLOOR  or  window edges < MIN_EDGES
 ```
 
@@ -81,7 +81,9 @@ The class and flags change at the end of the last pause cycle. The Python model 
 
 **(resolved) Thresholds.** The spec's training step mentions "integer thresholds" without saying where they go. They are one 8-bit signed threshold per hidden unit, B[j]: the accumulator starts at B[j] instead of 0. That is 64 more configuration bits, and it made training more stable across restarts.
 
-**Host configuration:** the 4 pin selects, the filter mode, `SHIFT`, `MARGIN` (8-bit), `FLOOR` (12-bit signed), `MIN_EDGES` (activity gate, 0..256) and the prescaler.
+**Host configuration:** the 4 pin selects, the filter mode, `SHIFT`, `MARGIN` (8-bit, one per class), `FLOOR` (12-bit signed), `MIN_EDGES` (activity gate, 0..256) and the prescaler.
+
+**(new) Per-class margins.** A window is confident when its best logit beats the second by at least the margin of the class it is called, `EAR_MARGIN_K` (0xD0 + k). Writing `EAR_MARGIN` (0xB4) sets all eight, so a host that writes one margin gets the behaviour of one margin; reading it returns class 0's. With one margin for every class, the margin that keeps every class 99% precise and foreign traffic rarely confident is set by the class whose wrong answers come with the largest gaps, and the other classes pay for it. `calibrate_classes` in ear/train.py sets each class's margin against its own validation windows, sharing the 5% foreign budget between classes to maximise the mean share of each class's windows that are confident and right. Cost: 56 more flip-flops and an 8-way byte select on the class.
 
 ## Prescaler
 

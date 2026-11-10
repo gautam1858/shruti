@@ -75,6 +75,11 @@ def hidden_int(model: Model, X: np.ndarray) -> np.ndarray:
     return np.minimum(255, np.maximum(acc, 0) >> model.cfg.shift)
 
 
+def margin_of(model: Model, pred: np.ndarray) -> np.ndarray:
+    """Each window's margin: its predicted class's (EAR_MARGIN_K), or MARGIN for all."""
+    return np.array([model.cfg.margin_of(k) for k in range(CLASSES_N)])[pred]
+
+
 @dataclass
 class Scored:
     windows: int
@@ -95,7 +100,7 @@ def score(model: Model, feats: np.ndarray, edges: np.ndarray, truth: Optional[in
     srt = np.sort(lg, axis=1)
     pred = predict(lg)
     ood = (srt[:, -1] < model.cfg.floor) | (edges < model.cfg.min_edges)
-    conf = ((srt[:, -1] - srt[:, -2]) >= model.cfg.margin) & ~ood
+    conf = ((srt[:, -1] - srt[:, -2]) >= margin_of(model, pred)) & ~ood
     ans = ~ood
     right = pred == truth if truth is not None else np.zeros(n, bool)
     return Scored(n, float(ans.mean()),
@@ -219,7 +224,7 @@ def held_out(captures: int = TRAIN_CAPTURES, seed: int = 1, unknown_captures: in
                     np.array(model.bias))
     srt = np.sort(lu, axis=1)
     pu = predict(lu)
-    conf = (srt[:, -1] - srt[:, -2]) >= model.cfg.margin
+    conf = (srt[:, -1] - srt[:, -2]) >= margin_of(model, pu)
     floor = srt[:, -1] < model.cfg.floor
     per = {}
     for c in UNKNOWN2:
@@ -365,7 +370,9 @@ def markdown(cov, prb, ho: Optional[HeldOut], gap, duration: int = DURATION,
         r = ho.report
         L += ["", "## Classes held out of training", "",
               f"The model trained on {', '.join(KNOWN6)} only (the second section above: "
-              f"{r.test_accuracy:.1%} test accuracy, MARGIN {r.margin}, FLOOR {r.floor}), "
+              f"{r.test_accuracy:.1%} test accuracy, MARGIN {r.margin}"
+              + (f", per-class {'/'.join(map(str, r.margins))}" if r.margins else "")
+              + f", FLOOR {r.floor}), "
               f"run on held-out JTAG/SWD and PS/2 windows (build(50, 1001)).", "",
               "| Held-out class | Windows | Floor flag | Confident | Confident calls |",
               "| --- | --- | --- | --- | --- |"]

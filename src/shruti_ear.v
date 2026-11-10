@@ -60,7 +60,7 @@ module shruti_ear (
   reg        en, hold;
   reg [15:0] sel;                    // four 4-bit pin selects
   reg [3:0]  shift;
-  reg [7:0]  margin;
+  reg [63:0] margin;                 // per-class confidence margins, class k in [8k+7:8k]
   reg [11:0] floor_;
   reg [8:0]  min_edges;
   reg [63:0] thr;                    // B[0..7], signed bytes
@@ -360,7 +360,8 @@ module shruti_ear (
   wire [2:0]         n_bestk = better ? o_k : bestk;
   wire signed [15:0] gap     = best - second;
   wire signed [15:0] floor_x = {{4{floor_[11]}}, floor_};
-  wire               w_conf  = gap >= $signed({8'd0, margin});
+  wire [7:0]         margin_k = margin[8*bestk +: 8];       // the best class's margin
+  wire               w_conf  = gap >= $signed({8'd0, margin_k});
   wire               w_ood   = best < floor_x || nedges < min_edges;
 
   // radix-4 division step: four times the remainder against 1, 2 and 3 lengths
@@ -393,7 +394,7 @@ module shruti_ear (
       8'hB1:   rdata = sel[7:0];
       8'hB2:   rdata = sel[15:8];
       8'hB3:   rdata = {4'd0, shift};
-      8'hB4:   rdata = margin;
+      8'hB4:   rdata = margin[7:0];
       8'hB5:   rdata = floor_[7:0];
       8'hB6:   rdata = {4'd0, floor_[11:8]};
       8'hB7:   rdata = min_edges[7:0];
@@ -407,6 +408,8 @@ module shruti_ear (
       8'hC0, 8'hC1, 8'hC2, 8'hC3, 8'hC4, 8'hC5, 8'hC6, 8'hC7:
                rdata = thr[8*raddr[2:0] +: 8];
       8'hC8:   rdata = {6'd0, psel};
+      8'hD0, 8'hD1, 8'hD2, 8'hD3, 8'hD4, 8'hD5, 8'hD6, 8'hD7:
+               rdata = margin[8*raddr[2:0] +: 8];
       default: rdata = 8'd0;
     endcase
   end
@@ -415,7 +418,7 @@ module shruti_ear (
   integer r, sa, sb;
   always @(posedge clk) begin
     if (!rst_n) begin
-      en <= 1'b0; hold <= 1'b0; sel <= 16'h3210; shift <= 4'd4; margin <= 8'd8;
+      en <= 1'b0; hold <= 1'b0; sel <= 16'h3210; shift <= 4'd4; margin <= {8{8'd8}};
       floor_ <= 12'd0; min_edges <= 9'd24; thr <= 64'd0; psel <= 2'd0; pre <= 6'd0;
       state <= S_RUN; p <= 10'd0; wlen <= 17'd0; nedges <= 9'd0; nwin <= 8'd0; valid <= 1'b0;
       cls <= 3'd0; conf <= 1'b0; ood <= 1'b0; shown <= 3'd0;
@@ -444,7 +447,7 @@ module shruti_ear (
           8'hB1: sel[7:0] <= wdata;
           8'hB2: sel[15:8] <= wdata;
           8'hB3: shift <= wdata[3:0];
-          8'hB4: margin <= wdata;
+          8'hB4: margin <= {8{wdata}};             // every class at once
           8'hB5: floor_[7:0] <= wdata;
           8'hB6: floor_[11:8] <= wdata[3:0];
           8'hB7: min_edges[7:0] <= wdata;
@@ -456,6 +459,7 @@ module shruti_ear (
       end
       if (wr && waddr[7:3] == 5'b11000) thr[8*waddr[2:0] +: 8] <= wdata;
       if (wr && waddr == 8'hC8) psel <= wdata[1:0];
+      if (wr && waddr[7:3] == 5'b11010) margin[8*waddr[2:0] +: 8] <= wdata;
       if (rtake && raddr == 8'hBE) begin
         hft <= (hft == 4'd11) ? 4'd0 : hft + 4'd1;
         if (hft == 4'd11) hfs <= (hfs == 3'd5) ? 3'd0 : hfs + 3'd1;

@@ -34,7 +34,7 @@
  *   0xA2 write: release the pins set in the mask (stop driving them); read: output enables
  *   0xA3 filtered level of B0-B7   0xA4 ID 0x53 ('S')   0xA5 ISA version 0x11
  *   0xA6 RUN for both EMs at once, {EM1, EM0}, so they start in the same cycle
- *   0xB0-0xC7  the Ear (src/shruti_ear.v, docs/host-interface.md)
+ *   0xB0-0xC8, 0xD0-0xD7  the Ear (src/shruti_ear.v, docs/host-interface.md)
  */
 
 `default_nettype none
@@ -263,7 +263,8 @@ module tt_um_gautam1858_shruti (
       8'hA4: spi_rdata = 8'h53;
       8'hA5: spi_rdata = 8'h11;
       8'hA6: spi_rdata = {6'd0, run};
-      default: spi_rdata = (spi_raddr[7:4] == 4'hB || spi_raddr[7:4] == 4'hC) ? ear_rdata : 8'h00;
+      default: spi_rdata = (spi_raddr[7:4] == 4'hB || spi_raddr[7:4] == 4'hC ||
+                                spi_raddr[7:4] == 4'hD) ? ear_rdata : 8'h00;
     endcase
   end
 

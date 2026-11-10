@@ -48,7 +48,7 @@ On a read, MISO changes shortly after each SCK rising edge, and the master sampl
 | 0xB0 | EAR_CTRL | R/W | Bit 0 EN, bit 1 HOLD. Reads {HELD, PAUSING, HOLD, EN} |
 | 0xB1, 0xB2 | EAR_SEL | R/W | The Ear's 4 pins, 4 bits each (0-11 = B0-B7, M0-M3): pin 0 in 0xB1[3:0], pin 1 in 0xB1[7:4], pin 2 in 0xB2[3:0], pin 3 in 0xB2[7:4] |
 | 0xB3 | EAR_SHIFT | R/W | Hidden-layer requantisation shift, 0-15 |
-| 0xB4 | EAR_MARGIN | R/W | Confidence margin, 0-255 |
+| 0xB4 | EAR_MARGIN | R/W | Confidence margin, 0-255. A write sets every class's margin (EAR_MARGIN_K); a read returns class 0's |
 | 0xB5, 0xB6 | EAR_FLOOR | R/W | Out-of-distribution floor, 12-bit signed |
 | 0xB7, 0xB8 | EAR_MIN_EDGES | R/W | Activity gate, 0-256 |
 | 0xB9 | EAR_WEIGHTS | W | Weight chain port: 160 bytes in chain order, while the Ear is disabled and not pausing |
@@ -59,6 +59,7 @@ On a read, MISO changes shortly after each SCK rising edge, and the master sampl
 | 0xBF | EAR_EDGES | R | Edges in the current or held window, saturating at 255 |
 | 0xC0-0xC7 | EAR_THR | R/W | Hidden-unit thresholds B[0..7], signed bytes |
 | 0xC8 | EAR_CFG | R/W | Bits 1:0, the prescaler: 0, 1, 2, 3 for 1, 4, 16, 64 cycles per tick (window times count ticks, so slow buses close windows on edges). Change it while the Ear is disabled |
+| 0xD0-0xD7 | EAR_MARGIN_K | R/W | Class k's confidence margin at 0xD0 + k, 0-255: a window called class k is confident when its best logit beats the second by at least this. 8 after reset |
 
 The Ear's result also drives the output pins: `uo_out[6:4]` is the class, `uo_out[3]` the confident flag and `uo_out[7]` the out-of-distribution flag. The definition, timing and HOLD mode are in ear/SPEC.md.
 

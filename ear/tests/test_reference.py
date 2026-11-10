@@ -253,6 +253,18 @@ def test_class_pins_hold_the_last_confident_in_distribution_class():
         assert pins == want
 
 
+def test_per_class_margins_use_the_best_class_margin():
+    # Class 0 wins every window by the same gap; only its own margin decides confidence.
+    w1 = [[1] + [0] * 71 for _ in range(8)]
+    w2 = [[1] * 8] + [[0] * 8 for _ in range(7)]
+    f = [10] + [0] * 71
+    gap = Model(w1, w2, Config(shift=0)).infer(f).logits[0]
+    for margins, want in (([gap] + [255] * 7, True), ([gap + 1] + [0] * 7, False)):
+        r = Model(w1, w2, Config(shift=0, margin=0, margins=margins)).infer(f)
+        assert r.cls == 0 and r.confident is want
+    assert Config(margin=7).margin_of(5) == 7
+
+
 def test_thresholds_shift_the_hidden_units():
     w1 = [[0] * 72 for _ in range(8)]
     w1[0][0] = 1
