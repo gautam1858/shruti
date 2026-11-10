@@ -10,7 +10,9 @@ The host (the demo board's RP2040, or any SPI master) loads programs, sets up an
 | ui_in[1] | MOSI |
 | ui_in[2] | CS_n |
 | uo_out[0] | MISO |
-| uo_out[1] | IRQ: high while any Event Machine is halted |
+| ui_in[3] | Watch trigger-in: a rising edge triggers Watch if SRC enables it |
+| uo_out[1] | IRQ: high while any Event Machine is halted or Watch's recorder is frozen |
+| uo_out[2] | Watch trigger-out: high from the cycle after Watch triggers until the host writes WATCH_CTRL |
 | uo_out[3] | Ear confident |
 | uo_out[6:4] | Ear class: the last window that was confident and not out-of-distribution, 0 after reset. EAR_RESULT has the latest window's class |
 | uo_out[7] | Ear out-of-distribution |
@@ -62,6 +64,21 @@ On a read, MISO changes shortly after each SCK rising edge, and the master sampl
 | 0xD0-0xD7 | EAR_MARGIN_K | R/W | Class k's confidence margin at 0xD0 + k, 0-255: a window called class k is confident when its best logit beats the second by at least this. 8 after reset |
 
 The Ear's result also drives the output pins: `uo_out[6:4]` is the class, `uo_out[3]` the confident flag and `uo_out[7]` the out-of-distribution flag. The definition, timing and HOLD mode are in ear/SPEC.md.
+
+Watch, cut level (src/shruti_watch.v; definitions and timing in watch/SPEC.md):
+
+| Address | Name | Access | Contents |
+| --- | --- | --- | --- |
+| 0xE0 | WATCH_CTRL | R/W | Write with bit 1 TRIG set: trigger now, if armed; nothing else changes. Otherwise bit 0 ARM: 1 clears the recorder and arms, 0 disarms (entries stay); either clears TRIGGERED, FROZEN, IRQ and trigger-out. Reads {FROZEN, TRIGGERED, ARMED} |
+| 0xE1 | WATCH_SRC | R/W | Trigger sources: bit 0 monitor 0, 1 monitor 1, 2 Ear OOD rising, 3 Ear class-pin change, 4 trigger-in rising |
+| 0xE2 | WATCH_POST | R/W | Entries kept after the trigger, 0-15 |
+| 0xE3 | WATCH_CAUSE | R | The sources that fired in the trigger cycle |
+| 0xE4 | WATCH_COUNT | R | Valid recorder entries, 0-16 |
+| 0xE5-0xE7 | WATCH_TTIME | R | Timestamp of the trigger cycle, 24 bits, low byte first |
+| 0xE8, 0xE9 | WATCH_PINS | R/W | Pins whose edges are recorded: B0-B7, then M0-M3 in bits 3:0. All after reset |
+| 0xEA | WATCH_DATA | R / W | Read port: the recorder oldest entry first, 4 bytes each (timestamp low, high, B0-B7, M0-M3); 0 past the last entry. Write: restart |
+| 0xEC, 0xED | WATCH_HITS | R / W | Monitor 0 and 1 hit counters, saturating at 255; a write clears |
+| 0xF0-0xF7, 0xF8-0xFF | WATCH_MON0, WATCH_MON1 | R/W | Per monitor: +0 CFG {SYNC action, 0, edge[1:0] (0 off, 1 rise, 2 fall, 3 any), PIN[3:0]}; +1 SYNC flag index; +2/+3 guard mask; +4/+5 guard value (12 bits each); +6 shortest and +7 longest interval code (the Ear's 6-bit log code; 0 and 63 after reset) |
 
 Per Event Machine (offset from 0x80 or 0x90):
 

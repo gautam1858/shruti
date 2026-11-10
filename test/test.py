@@ -753,3 +753,236 @@ async def ear_features_match_window_by_window(dut):
         assert (lo | hi << 8) - ((hi >> 7) << 16) == max(r.logits), style
         # let this window's stimulus run out, so the next window starts from steady pads
         await chip.ticks(max(0, start + pad[-1][0] + 10 - chip.k))
+
+
+# -- Watch ---------------------------------------------------------------------------------
+
+from harness import WRITE_LATENCY  # noqa: E402
+from watch import model as watchm  # noqa: E402
+
+WATCH_CTRL, WATCH_SRC, WATCH_POST, WATCH_DATA = 0xE0, 0xE1, 0xE2, 0xEA
+
+
+class WatchRun:
+    """Reset the chip, then log every Watch write at the cycle its strobe lands, so the
+    reference can step through every cycle from reset with exactly what the RTL saw."""
+
+    async def start(self, chip):
+        self.chip = chip
+        k0 = chip.k
+        await chip.reset()
+        self.tr = k0 + 6                      # the first tick with rst_n high: cnt = 0
+        chip.recording = True
+        self.writes = {}
+
+    async def write(self, addr, data):
+        await self.chip.write(addr, [data])
+        self.writes[self.chip.last_rise + WRITE_LATENCY - 1] = (addr, data)
+
+    def model(self, end):
+        """Step the reference to tick `end`, checking trigger-out and IRQ on every tick.
+        Returns the reference and the SYNC flags it set."""
+        chip, w, sync = self.chip, watchm.Watch(), 0
+        pads = lambda t: chip.pads.get(t, 0xFFF)            # before recording: idle pads
+        vis = lambda t: pads(t - 2) & 0xFFF if t >= self.tr + 2 else 0
+        for t in range(self.tr, end):
+            uo = chip.outs.get(t)
+            if uo is not None:
+                assert (uo >> 2) & 1 == w.trig_out, f"tick {t}: trigger-out"
+                assert (uo >> 1) & 1 == w.irq, f"tick {t}: IRQ"
+            o = chip.outs.get(t, 0)
+            out = w.step(vis(t), vis(t - 1), t - self.tr, ear_ood=(o >> 7) & 1,
+                         ear_shown=(o >> 4) & 7, trig_pad=(pads(t) >> 12) & 1,
+                         write=self.writes.get(t))
+            sync |= out.sync_set
+        return w, sync
+
+    async def compare(self, w, sync):
+        chip = self.chip
+        for addr in (WATCH_CTRL, WATCH_SRC, WATCH_POST, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8,
+                     0xE9, 0xEC, 0xED, *range(0xF0, 0x100)):
+            got = (await chip.read(addr))[0]
+            assert got == w.read(addr), f"Watch register {addr:#x}: rtl {got} reference {w.read(addr)}"
+        assert (await chip.read(SYNC))[0] == sync, "SYNC flags set by the monitors"
+        data = await chip.read(WATCH_DATA, 4 * watchm.ENTRIES)
+        assert data == [w.data_byte(b) for b in range(4 * watchm.ENTRIES)], "recorder contents"
+
+
+def random_watch_config(rng, hot):
+    regs = []
+    for m in range(2):
+        base = 0xF0 + 8 * m
+        regs.append((base, rng.choice(hot) | rng.randrange(1, 4) << 4 | rng.randrange(2) << 7))
+        regs.append((base + 1, rng.randrange(4)))
+        mask = rng.choice([0, 1 << rng.choice(hot), rng.randrange(4096)])
+        value = rng.randrange(4096)
+        regs += [(base + 2, mask & 0xFF), (base + 3, mask >> 8),
+                 (base + 4, value & 0xFF), (base + 5, value >> 8)]
+        lo = rng.choice([0, 0, rng.randrange(24)])
+        regs += [(base + 6, lo), (base + 7, rng.choice([63, rng.randrange(lo, 48)]))]
+    pins = rng.choice([0xFFF, 0xFFF, rng.randrange(1, 4096)])
+    regs += [(WATCH_SRC, rng.randrange(32)), (WATCH_POST, rng.randrange(16)),
+             (0xE8, pins & 0xFF), (0xE9, pins >> 8)]
+    return regs
+
+
+@cocotb.test()
+async def watch_matches_reference(dut):
+    """Random monitors, trigger sources, POST and recorded pins on random edges across the 12
+    pins and trigger-in: trigger-out and IRQ every cycle, then every Watch register, the
+    SYNC flags and the recorder, against watch/model.py."""
+    chip = await new_chip(dut)
+    rng = random.Random(41)
+    froze = 0
+    for _ in range(4 if not GATES else 1):
+        run = WatchRun()
+        await run.start(chip)
+        hot = rng.sample(range(12), 4)
+        for addr, d in random_watch_config(rng, hot):
+            await run.write(addr, d)
+        await run.write(WATCH_CTRL, 1)
+        level = {p: 1 for p in range(12)}
+        stim, t = [], 20
+        while t < 3000:
+            t += rng.choice([1, 1, 2, 3, 5, 9, 17, 40, 120])
+            for p in rng.sample(hot, rng.choice([1, 1, 2])):
+                level[p] ^= 1
+                stim.append((t, p, level[p]))
+        tp = rng.randrange(100, 2800)
+        stim += [(tp, 12, 1), (tp + rng.randrange(1, 20), 12, 0)]
+        start = chip.k
+        chip.schedule(start, sorted(stim))
+        await chip.ticks(3100)
+        w, sync = run.model(chip.k + 1)
+        froze += w.frozen
+        await run.compare(w, sync)
+    assert froze >= 1, "no case froze the recorder"
+
+
+@cocotb.test()
+async def watch_host_trigger_and_rearm(dut):
+    """The host trigger, POST entries, freeze and IRQ, disarm keeping the entries, re-arm
+    clearing them, and the DATA port restart."""
+    chip = await new_chip(dut)
+    run = WatchRun()
+    await run.start(chip)
+    await run.write(WATCH_POST, 2)
+    await run.write(WATCH_CTRL, 1)
+    edges = [(20 + 30 * k, k % 3, (k // 3 + 1) % 2) for k in range(9)]
+    chip.schedule(chip.k, edges)
+    await chip.ticks(140)
+    await run.write(WATCH_CTRL, 2)                        # trigger
+    chip.schedule(chip.k, [(20 + 30 * k, 5, k % 2) for k in range(4)])
+    await chip.ticks(200)
+    w, sync = run.model(chip.k + 1)
+    assert w.frozen and w.count >= 3
+    await run.compare(w, sync)
+    await run.write(WATCH_DATA, 0)                        # restart the port
+    await run.write(WATCH_CTRL, 0)                        # disarm: entries stay
+    w, sync = run.model(chip.k + 1)
+    assert not w.frozen and w.count >= 3
+    await run.compare(w, sync)
+    await run.write(WATCH_CTRL, 1)                        # re-arm: cleared
+    w, sync = run.model(chip.k + 1)
+    assert w.count == 0
+    await run.compare(w, sync)
+
+
+@cocotb.test()
+async def watch_rules_by_hand(dut):
+    """Monitor rules with hand-counted answers as well as the reference: edge direction, the
+    interval bounds and their restart on a CFG write, the hit counter's saturation, and
+    trigger-in on its rising edge only."""
+    from ear.features import log2_code
+    chip = await new_chip(dut)
+    run = WatchRun()
+    await run.start(chip)
+    # Monitor 0: rises on B0. Monitor 1: falls on B1 at most 9 cycles after its rise.
+    await run.write(0xF0, 0 | watchm.EDGE_RISE << 4)
+    await run.write(0xF8, 1 | watchm.EDGE_FALL << 4)
+    await run.write(0xFF, log2_code(9))
+    t, stim = 20, []
+    for k in range(10):                                   # 11 falls and 10 rises on B0
+        stim += [(t, 0, 0), (t + 15, 0, 1)]
+        t += 30
+    stim.append((t, 0, 0))
+    t += 30
+    for k, width in enumerate([4, 20, 6, 30, 9, 10]):     # B1 high pulses: 4 fit in 9
+        stim += [(t, 1, 0), (t + 40, 1, 1), (t + 40 + width, 1, 0)]
+        t += 120
+    chip.schedule(chip.k, sorted(stim))
+    await chip.ticks(t + 50)
+    w, sync = run.model(chip.k + 1)
+    await run.compare(w, sync)
+    assert (await chip.read(0xEC))[0] == 10, "monitor 0 counts the 10 rises on B0"
+    assert (await chip.read(0xED))[0] == 3, "monitor 1 counts the falls 9 cycles or less after the rise"
+    # A CFG write restarts the interval: a fall long after the rise but soon after the write
+    # has no earlier edge, so its interval is 65,535 and passes CMIN = code(1,000).
+    await run.write(0xFE, log2_code(1000))
+    await run.write(0xFF, 63)
+    await run.write(0xED, 0)
+    chip.schedule(chip.k, [(10, 1, 1)])                   # rise
+    await chip.ticks(30)
+    await run.write(0xF8, 1 | watchm.EDGE_FALL << 4)      # restart
+    chip.schedule(chip.k, [(10, 1, 0)])                   # fall, about 150 cycles after the rise
+    await chip.ticks(40)
+    w, sync = run.model(chip.k + 1)
+    await run.compare(w, sync)
+    assert (await chip.read(0xED))[0] == 1, "the fall after a CFG write passes CMIN"
+    # The hit counter saturates at 255.
+    await run.write(0xF0, 2 | watchm.EDGE_ANY << 4)
+    await run.write(0xEC, 0)
+    chip.schedule(chip.k, [(10 + 3 * k, 2, (k + 1) % 2) for k in range(300)])
+    await chip.ticks(950)
+    assert (await chip.read(0xEC))[0] == 255, "hits saturate"
+    # Trigger-in held high before arming does not trigger; its next rising edge does.
+    chip.schedule(chip.k, [(5, 12, 1)])
+    await chip.ticks(20)
+    await run.write(WATCH_SRC, watchm.SRC_EXT)
+    await run.write(WATCH_CTRL, 1)
+    await chip.ticks(50)
+    assert (await chip.read(WATCH_CTRL))[0] & 2 == 0, "a held trigger-in does not trigger"
+    chip.schedule(chip.k, [(5, 12, 0), (25, 12, 1)])
+    await chip.ticks(60)
+    assert (await chip.read(WATCH_CTRL))[0] & 2, "trigger-in's rising edge triggers"
+    w, sync = run.model(chip.k + 1)
+    await run.compare(w, sync)
+
+@cocotb.test(skip=GATES)
+async def watch_triggers_on_the_ear(dut):
+    """The Ear's OOD flag rising and class-pin changes as trigger sources, with the trained
+    weights on simulated SPI traffic."""
+    chip = await new_chip(dut)
+    rng = random.Random(8)
+    fired = 0
+    for src in (watchm.SRC_OOD, watchm.SRC_CLASS):
+        run = WatchRun()
+        await run.start(chip)
+        cap = protosim.spi(rng, duration=14000, half=6)
+        init, edges = pins_of(cap, rng)
+        chip.ext = sum(v << p for p, v in enumerate(init)) | 0xF0
+        await run.write(WATCH_SRC, src)
+        await run.write(WATCH_POST, 15)
+        await run.write(WATCH_CTRL, 1)
+        model = trained_model()
+        if src == watchm.SRC_OOD:
+            model.cfg.floor = 2047                        # every window OOD
+        await chip.load_ear(model)
+        await chip.start_ear()
+        chip.schedule(chip.k, [(c + 20, p, v) for c, p, v in edges])
+        await chip.ticks(14100)
+        await chip.write(0xB0, [0])                       # EAR_CTRL: stop the Ear
+        await chip.ticks(20)
+        w, sync = run.model(chip.k + 1)
+        fired += w.triggered
+        await run.compare(w, sync)
+        if src == watchm.SRC_CLASS:
+            # The class pins hold a nonzero class with the Ear stopped: re-armed, Watch must
+            # not trigger, since the class does not change.
+            assert (chip.outs[chip.k] >> 4) & 7 != 0
+            await run.write(WATCH_CTRL, 1)
+            await chip.ticks(100)
+            w, sync = run.model(chip.k + 1)
+            assert not w.triggered
+            await run.compare(w, sync)
+    assert fired == 2, "both Ear sources should trigger"

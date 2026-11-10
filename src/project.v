@@ -5,13 +5,14 @@
  * Shruti: an event-native protocol emulator ASIC that also listens.
  *
  * Two Event Machines (src/shruti_em.v) behind the shared input path, the 24-bit
- * timestamp counter, the pin drivers, the host SPI (src/shruti_spi.v) and the Ear
- * (src/shruti_ear.v). Watch comes later; trigger out reads 0 for now.
+ * timestamp counter, the pin drivers, the host SPI (src/shruti_spi.v), the Ear
+ * (src/shruti_ear.v) and Watch (src/shruti_watch.v), cut level.
  *
  * Pins (docs/architecture-spec.md, "I/O plan and host interface"):
  *   ui_in[0..2]  host SPI SCK, MOSI, CS_n        uo_out[0]  host SPI MISO
- *   ui_in[3]     trigger in (unused so far)      uo_out[1]  IRQ: an Event Machine halted
- *   ui_in[4..7]  monitor-only pins M0-M3         uo_out[2]  trigger out (0 for now)
+ *   ui_in[3]     Watch trigger in                uo_out[1]  IRQ: an Event Machine halted,
+ *                                                           or Watch's recorder froze
+ *   ui_in[4..7]  monitor-only pins M0-M3         uo_out[2]  Watch trigger out
  *                                                uo_out[3]  Ear confident
  *                                                uo_out[6:4] Ear class (last confident one)
  *                                                uo_out[7]  Ear OOD
@@ -35,6 +36,7 @@
  *   0xA3 filtered level of B0-B7   0xA4 ID 0x53 ('S')   0xA5 ISA version 0x11
  *   0xA6 RUN for both EMs at once, {EM1, EM0}, so they start in the same cycle
  *   0xB0-0xC8, 0xD0-0xD7  the Ear (src/shruti_ear.v, docs/host-interface.md)
+ *   0xE0-0xED, 0xF0-0xFF  Watch (src/shruti_watch.v, watch/SPEC.md)
  */
 
 `default_nettype none
@@ -102,7 +104,7 @@ module tt_um_gautam1858_shruti (
   wire       spi_miso;
   wire       spi_port = ((spi_raddr[7:5] == 3'b100) &&
                          (spi_raddr[3:0] == 4'h6 || spi_raddr[3:0] == 4'h7)) ||
-                        spi_raddr == 8'hB9 || spi_raddr == 8'hBE;
+                        spi_raddr == 8'hB9 || spi_raddr == 8'hBE || spi_raddr == 8'hEA;
 
   shruti_spi u_spi (
       .clk(clk), .rst_n(rst_n),
@@ -189,6 +191,18 @@ module tt_um_gautam1858_shruti (
       .raddr(spi_raddr), .rtake(spi_take), .rdata(ear_rdata),
       .cls(ear_cls), .conf(ear_conf), .ood(ear_ood), .shown(ear_shown));
 
+  // ------------------------------------------------------------------ Watch
+  wire [7:0] watch_rdata;
+  wire [3:0] watch_sync;
+  wire       watch_trig, watch_irq;
+
+  shruti_watch u_watch (
+      .clk(clk), .rst_n(rst_n), .vis(filt_d), .vis_prev(filt_q), .cnt(cnt),
+      .ear_ood(ear_ood), .ear_shown(ear_shown), .trig_pad(ui_in[3]),
+      .wr(spi_wr), .waddr(spi_waddr), .wdata(spi_wdata),
+      .raddr(spi_raddr), .rtake(spi_take), .rdata(watch_rdata),
+      .sync_set(watch_sync), .trig_out(watch_trig), .irq(watch_irq));
+
   // ------------------------------------------------------------------ pin drivers
   // EM1 wins when both EMs drive a pin in the same cycle. Open-drain: level 0 pulls low,
   // level 1 releases the pin.
@@ -221,7 +235,7 @@ module tt_um_gautam1858_shruti (
       if (wr_em1 && wreg == 4'h0) run[1] <= spi_wdata[0];
       if (spi_wr && spi_waddr == 8'hA6) run <= spi_wdata[1:0];
       if (spi_wr && spi_waddr == 8'hA1) filt_mode <= spi_wdata[1:0];
-      sync <= (spi_wr && spi_waddr == 8'hA0) ? spi_wdata[3:0] : sync_b;
+      sync <= (spi_wr && spi_waddr == 8'hA0) ? spi_wdata[3:0] : sync_b | watch_sync;
     end
   end
 
@@ -264,15 +278,18 @@ module tt_um_gautam1858_shruti (
       8'hA5: spi_rdata = 8'h11;
       8'hA6: spi_rdata = {6'd0, run};
       default: spi_rdata = (spi_raddr[7:4] == 4'hB || spi_raddr[7:4] == 4'hC ||
-                                spi_raddr[7:4] == 4'hD) ? ear_rdata : 8'h00;
+                                spi_raddr[7:4] == 4'hD) ? ear_rdata :
+                           (spi_raddr[7:4] == 4'hE || spi_raddr[7:4] == 4'hF) ? watch_rdata :
+                                                                                8'h00;
     endcase
   end
 
   // ------------------------------------------------------------------ outputs
-  assign uo_out  = {ear_ood, ear_shown, ear_conf, 1'b0, halt0 | halt1, spi_miso};
+  assign uo_out  = {ear_ood, ear_shown, ear_conf, watch_trig, halt0 | halt1 | watch_irq,
+                    spi_miso};
   assign uio_out = pin_out;
   assign uio_oe  = pin_oe;
 
-  wire _unused = &{ena, ui_in[3], 1'b0};
+  wire _unused = &{ena, 1'b0};
 
 endmodule

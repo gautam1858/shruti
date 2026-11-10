@@ -31,7 +31,6 @@ EDGE_OFF, EDGE_RISE, EDGE_FALL, EDGE_ANY = 0, 1, 2, 3
 class Monitor:
     pin: int = 0
     edge: int = EDGE_OFF
-    act_trig: bool = False
     act_sync: bool = False
     syncidx: int = 0
     mask: int = 0
@@ -42,7 +41,7 @@ class Monitor:
     hits: int = 0
 
     def cfg_byte(self) -> int:
-        return (self.pin & 15) | self.edge << 4 | self.act_trig << 6 | self.act_sync << 7
+        return (self.pin & 15) | self.edge << 4 | self.act_sync << 7
 
     def matches(self, vis: int, edges: int) -> bool:
         if self.edge == EDGE_OFF or self.pin >= PINS or not (edges >> self.pin) & 1:
@@ -165,7 +164,7 @@ class Watch:
             m, r = self.mons[(addr - MON) // 8], (addr - MON) % 8
             if r == 0:
                 m.pin, m.edge = d & 15, (d >> 4) & 3
-                m.act_trig, m.act_sync = bool(d >> 6 & 1), bool(d >> 7 & 1)
+                m.act_sync = bool(d >> 7 & 1)
                 m.since = 0xFFFF
             elif r == 1:
                 m.syncidx = d & 3

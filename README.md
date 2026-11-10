@@ -30,9 +30,9 @@ Hardware compresses a 256-edge window into 72 speed-invariant features: log2-dom
 
 ## Watch: a protocol trigger with a flight recorder
 
-**Planned, not built yet.** The first build is the cut level (2 monitors, a 16-entry recorder), grown only if place-and-route leaves room. The design:
+**Built at the cut level** (`src/shruti_watch.v`, `watch/SPEC.md`): 2 rule monitors and a 16-entry recorder; the full size (4 monitors, 32 entries) waits on the area its GDS run leaves.
 
-Four host-configured rule monitors match an edge, a guard over the pin snapshot and interval bounds, for example "SPI data edge within one cycle of the sampling clock edge". Any rule, the Ear's unknown flag or a trigger-in pin freezes a 32-event pre-trigger ring buffer, raises IRQ and drives trigger-out for a scope. Rules catch the violation you can name; the Ear is meant to catch the traffic you cannot, though its unknown flag does not do that reliably yet (Known limitations). Watch observes only; nothing in Shruti alters the bus.
+Each host-configured rule monitor matches an edge on one pin, a guard over the 12-pin snapshot and bounds on the interval since that pin's last edge, for example "a UART pulse shorter than half a bit" or "an edge on MOSI while SCK is high". A match counts, can trigger, and can set a SYNC flag for the Event Machines. A rule, the Ear's unknown flag rising, a change of the Ear's class pins, a trigger-in edge or the host triggers the recorder: it keeps up to 15 more entries and freezes, raises IRQ and drives trigger-out for a scope. Each entry is a timestamp and the levels of all 12 pins, so edges on several pins in the same cycle are kept together. Rules catch the violation you can name; the Ear is meant to catch the traffic you cannot, though its unknown flag does not do that reliably yet (Known limitations). Watch observes only; nothing in Shruti alters the bus.
 
 ## Proof-carrying firmware
 
@@ -70,6 +70,7 @@ Every line names its evidence; the GitHub Actions in `.github/workflows` run all
 - **27 formal properties of the Event Machine**, proved by k-induction, each failed by at least one of 31 planted bugs (`verify/README.md`, `formal` workflow).
 - **UART out of a pin:** `fw/uart_tx.s`, loaded and started over SPI, sends bytes out of B1 (the Pmod UART TXD pin), checked against the ISS (`uart_tx_out_of_a_pin`).
 - **The Ear in RTL:** 72 features, canonical pin order, a ternary 72-8-8 MLP, the weight ring and HOLD-mode readback; a timebase prescaler of 1, 4, 16 or 64 cycles per tick (`EAR_CFG`) so slow buses fill their windows, and class pins that hold the last confident answer. Bit-exact to `ear/features.py` and `ear/mlp.py` in class, flags and their timing on every window, and in all 72 features read back over SPI (`test/test.py`, the tests starting `ear_`).
+- **Watch at the cut level:** 2 rule monitors, the trigger and a 16-entry recorder, cycle-exact to `watch/model.py`. Checked every cycle (trigger-out and IRQ) and then register by register, SYNC flag by flag and byte by byte of the recorder, on random monitors, sources and edges across all 12 pins and trigger-in, on the Ear's OOD and class-pin sources with the trained weights, and on the host trigger, freeze and re-arm (`test/test.py`, the tests starting `watch_`), with hand-counted rules besides. 15 planted bugs, each caught; the random co-simulation alone missed five, which the directed tests were written for (`docs/verification-log.md`).
 - **Gate level:** the cocotb tests on the routed netlist, 11 passing and 2 RTL-only skipped (`gl_test` job).
 - **Physical:** 50 MHz met at all three corners, slow-corner setup slack +4.24 ns, 68.6% utilisation, 0 DRC and 0 antenna violations, precheck passing (commit fcafc0b, spec section 8). The `signoff` job fails the build on negative slack, DRC, antenna or LVS errors (`verify/signoff.py`).
 - **ISS** (`iss/`), generated from `isa/isa.yaml`: every instruction and scheduler rule (`iss/tests`).
@@ -81,7 +82,7 @@ Every line names its evidence; the GitHub Actions in `.github/workflows` run all
 ### Planned
 
 Dates from the spec's milestones:
-- Watch at the cut level (2 monitors, a 16-entry recorder), then integration: checkpoint 29 Nov 2026.
+- Watch at full size (4 monitors, a 32-entry recorder), if the area allows: checkpoint 29 Nov 2026.
 - FPGA bring-up on a Tang Nano 20K against a USB-UART adapter, an SPI flash and an I2C sensor: 6 Dec 2026.
 - The classifier proof; formal properties for edge capture and the recorder; a bounded equivalence check of the Event Machine against an ISS transliteration: 13 Dec 2026.
 - Confident answers for CAN, which per-class margins do not give (a 20 kHz PWM looks more like CAN than CAN does), and for UART across its baud range: training or features, before the feature freeze, 20 Dec 2026.

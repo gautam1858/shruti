@@ -23,9 +23,9 @@ Monitor m matches in cycle t when all of these hold:
   bits). `I` saturates at 65,535 cycles, and an edge with no earlier edge since reset or since
   `CFG` was last written has `I` = 65,535. The defaults, 0 and 63, pass every interval.
 
-A match adds one to the monitor's 8-bit hit counter (saturating at 255), and, if its actions
-say so, is a trigger source and sets SYNC flag `SYNCIDX` for the Event Machines in the next
-cycle (as if an EM had set it).
+A match adds one to the monitor's 8-bit hit counter (saturating at 255), is a trigger source
+if `SRC` enables that monitor, and, if `MON_CFG` says so, sets SYNC flag `SYNCIDX` for the
+Event Machines in the next cycle (as if an EM had set it).
 
 Examples: a UART pulse shorter than half a bit (edge on RX with `CMAX` below half a bit's
 code), an SPI data edge right after the sampling clock edge (edge on MOSI with SCK high, and
@@ -71,7 +71,7 @@ returns 0; writing `DATA` restarts at the oldest entry.
 | 0xE8, 0xE9 | PINS | R/W | Pins whose edges are recorded, B0-B7 in 0xE8, M0-M3 in 0xE9[3:0]; all after reset |
 | 0xEA | DATA | R / W | Read: the next recorder byte, oldest entry first. Write: restart |
 | 0xEC, 0xED | HITS | R / W | Monitor 0 and 1 hit counters; a write clears |
-| 0xF0 + 8m | MON_CFG | R/W | Monitor m: bits 3:0 PIN (0-11 = B0-B7, M0-M3), 5:4 edge (0 off, 1 rise, 2 fall, 3 any), 6 trigger source, 7 set a SYNC flag. A write restarts the interval |
+| 0xF0 + 8m | MON_CFG | R/W | Monitor m: bits 3:0 PIN (0-11 = B0-B7, M0-M3), 5:4 edge (0 off, 1 rise, 2 fall, 3 any), 7 set a SYNC flag (bit 6 reads 0). Whether a match triggers is SRC's. A write restarts the interval |
 | 0xF1 + 8m | MON_SYNC | R/W | Bits 1:0 SYNCIDX |
 | 0xF2, 0xF3 + 8m | MON_MASK | R/W | Guard mask, 12 bits |
 | 0xF4, 0xF5 + 8m | MON_VALUE | R/W | Guard value, 12 bits |

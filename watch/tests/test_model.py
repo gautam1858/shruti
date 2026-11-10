@@ -105,7 +105,7 @@ def test_monitor_interval_bounds_catch_a_short_pulse():
 
 
 def test_monitor_trigger_keeps_post_entries_then_freezes():
-    b = armed(writes=[(MON, 2 | EDGE_RISE << 4 | 1 << 6), (SRC, SRC_MON0), (POST, 3)])
+    b = armed(writes=[(MON, 2 | EDGE_RISE << 4), (SRC, SRC_MON0), (POST, 3)])
     for _ in range(5):
         b.toggle(0)
         b.idle(2)
@@ -130,7 +130,7 @@ def test_monitor_trigger_keeps_post_entries_then_freezes():
 
 
 def test_post_zero_freezes_with_the_trigger_entry():
-    b = armed(writes=[(MON, 1 | EDGE_ANY << 4 | 1 << 6), (SRC, SRC_MON0), (POST, 0)])
+    b = armed(writes=[(MON, 1 | EDGE_ANY << 4), (SRC, SRC_MON0), (POST, 0)])
     b.toggle(0)
     b.toggle(1)
     assert b.w.frozen
