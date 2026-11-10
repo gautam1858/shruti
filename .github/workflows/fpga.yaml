@@ -2,18 +2,38 @@ name: fpga
 
 on:
   push:
-    # Comment out (or remove) the following line to run the FPGA workflow on every push:
-    branches: none
   workflow_dispatch:
 
 jobs:
-  fpga:
+  tangnano20k:
     runs-on: ubuntu-24.04
     steps:
       - name: checkout repo
         uses: actions/checkout@v6
-        with:
-          submodules: recursive
 
-      - name: FPGA bitstream for TT ASIC Sim (ICE40UP5K)
-        uses: TinyTapeout/tt-gds-action/fpga/ice40up5k@ttihp27a
+      - name: Setup python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install the open Gowin toolchain (Yosys, nextpnr-himbaechel, Apicula)
+        run: pip install yowasp-yosys yowasp-nextpnr-himbaechel-gowin apycula
+
+      - name: Build the Tang Nano 20K bitstream
+        run: sh fpga/tangnano20k/build.sh
+
+      - name: Utilisation and timing
+        run: |
+          echo "## Tang Nano 20K" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E "LUT4:|DFF:|ALU:|IOB:|Max frequency" fpga/tangnano20k/out/pnr.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: upload bitstream and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tangnano20k
+          path: |
+            fpga/tangnano20k/out/shruti.fs
+            fpga/tangnano20k/out/*.log

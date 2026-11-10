@@ -83,7 +83,7 @@ Every line names its evidence; the GitHub Actions in `.github/workflows` run all
 
 Dates from the spec's milestones:
 - Watch at full size (4 monitors, a 32-entry recorder), if the area allows: checkpoint 29 Nov 2026.
-- FPGA bring-up on a Tang Nano 20K against a USB-UART adapter, an SPI flash and an I2C sensor: 6 Dec 2026.
+- FPGA bring-up on a Tang Nano 20K against a USB-UART adapter, an SPI flash and an I2C sensor: 6 Dec 2026. The bitstream builds (60% of LUTs, 70 MHz estimated, `fpga/README.md`); nothing has run on a board yet.
 - The classifier proof; formal properties for edge capture and the recorder; a bounded equivalence check of the Event Machine against an ISS transliteration: 13 Dec 2026.
 - Confident answers for CAN, which per-class margins do not give (a 20 kHz PWM looks more like CAN than CAN does), and for UART across its baud range: training or features, before the feature freeze, 20 Dec 2026.
 - `shruti teach` and `shruti load` (which refuses unproven programs), proofs for the SPI slave and the I2C target, and the PS/2 demo (firmware for a protocol the chip was not designed for, accepted by the prover with no code review): 20 Dec 2026; demos count only if passing by then.
@@ -112,7 +112,7 @@ On simulated buses with the shipped weights (`ear/REPORT.md`), each bus at the p
 | `fw/` | Firmware library: UART, SPI, I2C first, with their contracts |
 | `ear/` | Feature-extractor reference model, training pipeline, weight export, evaluation |
 | `verify/` | Formal properties (SymbiYosys), planted-bug runs, the CI signoff gate |
-| `fpga/` | Tang Nano 20K prototype (planned) |
+| `fpga/` | Tang Nano 20K build: bitstream from the same RTL with the open Gowin toolchain; not yet run on a board |
 | `src/`, `test/` | Tiny Tapeout RTL and cocotb tests (what the GDS and test actions build) |
 | `synth/` | Early Yosys synthesis onto the CMOS5L cells |
 
