@@ -221,11 +221,11 @@ The distinctive claim is a bit-exact formal proof that the on-die classifier com
 6. ML validation. Held-out captures from the FPGA, at least five devices per class across speeds, give a confusion matrix. OOD is tested by training without JTAG and PS/2 and reporting the flag rate on them against the false-alarm rate on known classes. Glitch and speed-extreme robustness are reported too.
 7. Physical. Gate-level simulation of the key tests after place-and-route, timing signoff at 50 MHz, and a 24-hour FPGA loopback soak on real devices.
 
-Status, 8 Oct 2026:
-- 1 and 2 are done for the Event Machines and the Ear (test/test.py; 60 random two-EM programs match the ISS every cycle; the Ear's 72 features match ear/features.py window by window).
+Status, Nov 2026:
+- 1 and 2 are done for the Event Machines, the Ear and Watch (test/test.py; 60 random two-EM programs match the ISS every cycle; the Ear's 72 features match ear/features.py window by window; Watch matches watch/model.py every cycle).
 - 3 is partial: the firmware runs on the ISS against peer-device models, with injected faults (a framing error, a glitch, NACKs, clock stretching; fw/tests); cocotb bus models on the RTL, and the monitors they should fire, are planned.
-- 4 is partial: 27 Event Machine properties (scheduler, LATE, WAIT timeouts, FIFOs, PC, HALT) are proved by k-induction, every one with a planted bug that fails it (verify/README.md). Capture and the recorder are planned; the recorder waits for Watch.
-- 5 is planned for 13 Dec.
+- 4 is partial: 27 Event Machine properties (scheduler, LATE, WAIT timeouts, FIFOs, PC, HALT) are proved by k-induction, every one with a planted bug that fails it (verify/README.md). Capture and the recorder are planned (Watch's recorder is checked cycle by cycle in cocotb, not yet formally).
+- 5 is done for the datapath units (verify/ear.sby, Phase D, Nov 2026): the multiply-accumulate, requantisation, argmax and decision units are proved against the specification for every input, the dot products by k-induction on the running sum, and each of 10 planted bugs fails. The invariant over the whole 648-cycle schedule is not: which feature and weight meet in which cycle is checked bit-exact in cocotb on every window.
 - 6 is on simulated buses only (ear/REPORT.md); FPGA captures wait for the FPGA.
 - 7 is done for the current blocks (gate-level simulation and signoff at 50 MHz in CI, spec section 8); the FPGA soak waits for the FPGA.
 
