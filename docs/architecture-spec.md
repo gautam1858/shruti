@@ -132,7 +132,7 @@ Four rule monitors, each host-configured: an edge to match (pin, rise, fall or a
 
 Trigger sources: any rule, the Ear's OOD flag, an Ear class change, the host, or the external trigger-in pin. On trigger the recorder keeps N more events (host-set, 0 to 31) and freezes, raises IRQ, drives trigger-out so a scope can capture the same moment, and optionally halts the EMs. The recorder holds 32 entries of 21 bits: 16 low timestamp bits, 4-bit pin, 1-bit edge, read out over SPI.
 
-Status, 8 Oct 2026: Watch is not built. The first build is the cut level (2 monitors, a 16-entry recorder), grown only if place-and-route leaves room.
+Status, Nov 2026 (Phase C): the cut level is built, src/shruti_watch.v, cycle-exact to watch/model.py and specified in watch/SPEC.md: 2 monitors and a 16-entry recorder. Two changes from the design above, both in watch/SPEC.md: an entry is a 12-pin snapshot and a 16-bit timestamp (28 bits), so edges on several pins in one cycle are all kept, and there is no "halt the EMs" action, which would need a pause input the Event Machine does not have (a SYNC flag lets firmware stop itself). Its GDS run (commit a451cee): 703,027 um2 of cells, 58.2% of the 8x4 core (52.1% without Watch), slow-corner setup slack +5.30 ns, typical +9.22, fast +11.57, worst hold +0.10 ns, 0 DRC, antenna and LVS errors; 8 max-slew and 348 max-fanout warnings; 19.4 mW. Full size would cost about as much again and land near the 65% ceiling, so Watch stays at the cut level.
 
 Rules and the learned model are complementary on purpose: rules catch the violation you can name, the Ear catches the traffic you cannot, and both land the raw edges in the same buffer. (Status, 8 Oct 2026: the Ear's unknown flag does not yet catch untrained traffic; see the OOD row of the risk table.)
 
@@ -221,11 +221,11 @@ The distinctive claim is a bit-exact formal proof that the on-die classifier com
 6. ML validation. Held-out captures from the FPGA, at least five devices per class across speeds, give a confusion matrix. OOD is tested by training without JTAG and PS/2 and reporting the flag rate on them against the false-alarm rate on known classes. Glitch and speed-extreme robustness are reported too.
 7. Physical. Gate-level simulation of the key tests after place-and-route, timing signoff at 50 MHz, and a 24-hour FPGA loopback soak on real devices.
 
-Status, 8 Oct 2026:
-- 1 and 2 are done for the Event Machines and the Ear (test/test.py; 60 random two-EM programs match the ISS every cycle; the Ear's 72 features match ear/features.py window by window).
+Status, Nov 2026:
+- 1 and 2 are done for the Event Machines, the Ear and Watch (test/test.py; 60 random two-EM programs match the ISS every cycle; the Ear's 72 features match ear/features.py window by window; Watch matches watch/model.py every cycle).
 - 3 is partial: the firmware runs on the ISS against peer-device models, with injected faults (a framing error, a glitch, NACKs, clock stretching; fw/tests); cocotb bus models on the RTL, and the monitors they should fire, are planned.
-- 4 is partial: 27 Event Machine properties (scheduler, LATE, WAIT timeouts, FIFOs, PC, HALT) are proved by k-induction, every one with a planted bug that fails it (verify/README.md). Capture and the recorder are planned; the recorder waits for Watch.
-- 5 is planned for 13 Dec.
+- 4 is partial: 27 Event Machine properties (scheduler, LATE, WAIT timeouts, FIFOs, PC, HALT) are proved by k-induction, every one with a planted bug that fails it (verify/README.md). Capture and the recorder are planned (Watch's recorder is checked cycle by cycle in cocotb, not yet formally).
+- 5 is done for the datapath units (verify/ear.sby, Phase D, Nov 2026): the multiply-accumulate, requantisation, argmax and decision units are proved against the specification for every input, the dot products by k-induction on the running sum, and each of 10 planted bugs fails. The invariant over the whole 648-cycle schedule is not: which feature and weight meet in which cycle is checked bit-exact in cocotb on every window.
 - 6 is on simulated buses only (ear/REPORT.md); FPGA captures wait for the FPGA.
 - 7 is done for the current blocks (gate-level simulation and signoff at 50 MHz in CI, spec section 8); the FPGA soak waits for the FPGA.
 

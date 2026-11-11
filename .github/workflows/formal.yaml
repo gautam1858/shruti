@@ -22,6 +22,9 @@ jobs:
       - name: Every cover statement is reachable
         run: cd verify && sby -f em.sby cover
 
+      - name: Prove the Ear's classifier datapath against its specification
+        run: cd verify && sby -f ear.sby
+
       - name: Every planted bug fails the bounded check
         run: |
           echo "## Formal: planted bugs" >> $GITHUB_STEP_SUMMARY
@@ -32,4 +35,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: formal-logs
-          path: verify/em_*/**/*.txt
+          path: |
+            verify/em_*/**/*.txt
+            verify/ear_*/**/*.txt

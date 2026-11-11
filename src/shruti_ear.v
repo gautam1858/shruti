@@ -347,22 +347,20 @@ module shruti_ear (
   wire [1:0] wcode = chain[1:0];
   wire signed [15:0] xin  = {8'd0, xr};
   wire signed [15:0] base = x_first ? (x_l2 ? 16'sd0 : {{8{thr[8*x_j + 7]}}, thr[8*x_j +: 8]}) : acc;
-  wire signed [15:0] term = (wcode == 2'b01) ? xin : (wcode == 2'b11) ? -xin : 16'sd0;
-  wire signed [15:0] sum  = base + term;
-  wire [15:0] relu = sum[15] ? 16'd0 : (sum >>> shift);
-  wire [7:0]  hval = (relu > 16'd255) ? 8'd255 : relu[7:0];
+  wire signed [15:0] sum;
+  wire [7:0]  hval;
+  shruti_ear_mac u_mac (.base(base), .xin(xin), .wcode(wcode), .shift(shift),
+                        .sum(sum), .hval(hval));
 
   // argmax stage: a cycle after each layer-2 output completes (lowest k wins ties)
-  wire               k0      = o_k == 3'd0;
-  wire               better  = k0 || o_r > best;
-  wire signed [15:0] n_best  = better ? o_r : best;
-  wire signed [15:0] n_sec   = k0 ? -16'sd32768 : better ? best : (o_r > second ? o_r : second);
-  wire [2:0]         n_bestk = better ? o_k : bestk;
-  wire signed [15:0] gap     = best - second;
-  wire signed [15:0] floor_x = {{4{floor_[11]}}, floor_};
-  wire [7:0]         margin_k = margin[8*bestk +: 8];       // the best class's margin
-  wire               w_conf  = gap >= $signed({8'd0, margin_k});
-  wire               w_ood   = best < floor_x || nedges < min_edges;
+  wire signed [15:0] n_best, n_sec;
+  wire [2:0]         n_bestk;
+  wire               w_conf, w_ood;
+  shruti_ear_argmax u_argmax (.o_r(o_r), .o_k(o_k), .best(best), .second(second),
+                              .bestk(bestk), .n_best(n_best), .n_sec(n_sec),
+                              .n_bestk(n_bestk), .margin(margin), .floor_(floor_),
+                              .nedges(nedges), .min_edges(min_edges),
+                              .w_conf(w_conf), .w_ood(w_ood));
 
   // radix-4 division step: four times the remainder against 1, 2 and 3 lengths
   reg [19:0] r4, s1, s2, s3;
@@ -585,3 +583,52 @@ module shruti_ear (
   end
 
 endmodule
+
+// The multiply-accumulate step and the hidden-unit requantisation (ear/SPEC.md): one
+// ternary weight times one input, added to the running sum. A module of its own so that
+// verify/ear.sby can prove it against the dot product for every input.
+module shruti_ear_mac (
+    input  wire signed [15:0] base,     // the running sum, or the threshold at a unit's start
+    input  wire signed [15:0] xin,      // the input, zero-extended
+    input  wire        [1:0]  wcode,    // 01 = +1, 11 = -1, else 0
+    input  wire        [3:0]  shift,
+    output wire signed [15:0] sum,
+    output wire        [7:0]  hval      // min(255, max(0, sum) >> shift)
+);
+  wire signed [15:0] term = (wcode == 2'b01) ? xin : (wcode == 2'b11) ? -xin : 16'sd0;
+  assign sum = base + term;
+  wire [15:0] relu = sum[15] ? 16'd0 : (sum >>> shift);
+  assign hval = (relu > 16'd255) ? 8'd255 : relu[7:0];
+endmodule
+
+// The argmax over the 8 outputs as they arrive in class order (lowest class wins ties), and
+// the decision on the result: confident if the best beats the second by the best class's
+// margin, out-of-distribution if the best is under FLOOR or the window had too few edges.
+module shruti_ear_argmax (
+    input  wire signed [15:0] o_r,      // the output that just completed
+    input  wire        [2:0]  o_k,      // its class
+    input  wire signed [15:0] best,
+    input  wire signed [15:0] second,
+    input  wire        [2:0]  bestk,
+    output wire signed [15:0] n_best,
+    output wire signed [15:0] n_sec,
+    output wire        [2:0]  n_bestk,
+    input  wire        [63:0] margin,   // per class, 8 bits each
+    input  wire        [11:0] floor_,
+    input  wire        [8:0]  nedges,
+    input  wire        [8:0]  min_edges,
+    output wire               w_conf,
+    output wire               w_ood
+);
+  wire k0     = o_k == 3'd0;
+  wire better = k0 || o_r > best;
+  assign n_best  = better ? o_r : best;
+  assign n_sec   = k0 ? -16'sd32768 : better ? best : (o_r > second ? o_r : second);
+  assign n_bestk = better ? o_k : bestk;
+  wire signed [15:0] gap      = best - second;
+  wire signed [15:0] floor_x  = {{4{floor_[11]}}, floor_};
+  wire [7:0]         margin_k = margin[8*bestk +: 8];
+  assign w_conf = gap >= $signed({8'd0, margin_k});
+  assign w_ood  = best < floor_x || nedges < min_edges;
+endmodule
+

@@ -12,6 +12,8 @@ The submission's verification report is built from this log: every defect found,
 | Prover (Z3) | | | 0 | | | 0 |
 | RTL vs ISS differential (cocotb) | | | | 0 | | 0 |
 | Ear RTL vs the Python reference (cocotb) | 1 | | | 1 | | 2 |
+| Watch reference, its own unit tests (before the RTL) | 1 | | | | | 1 |
+| Watch RTL vs the Python reference (cocotb) | | | | 0 | | 0 |
 | Building and measuring (synthesis, timing, datasheets) | 4 | | | 1 | | 5 |
 | Gate-level simulation (CI, and locally on the Yosys netlist) | | | | 1 | 1 | 2 |
 | Formal properties of the Event Machine (SymbiYosys, 8 Oct) | | | | 0 | | 0 |
@@ -57,6 +59,12 @@ Ear training (Phase B, Nov 2026). Design findings, not bugs; ear/REPORT.md has t
 
 Flow (local tools, Phase B)
 - Icarus Verilog 12 does not drive the delayed signals of the CMOS5L flip-flop models' timing checks, so in a local gate-level run every flip-flop stays unknown and every test fails. A local copy of the models with those signals assigned from their pins runs the Event Machine tests, but the gate-level Ear tests did not finish in this container; Phase B's gate-level evidence is CI's gl_test on the routed netlist.
+
+Watch on the routed netlist (CI gl_test, commit a451cee)
+- `watch_matches_reference` failed at gate level, not because the netlist disagreed with the reference (it matched on every check) but because at gate level the test runs one random case, and that case never froze the recorder, which the test requires. Fixed with a fifth case that always freezes (trigger-in, every pin recorded, POST 3), which is the one gate level runs; the four random cases are unchanged and still catch their planted bugs.
+
+Watch (found while writing the reference, Phase C)
+- A host trigger cleared itself: CTRL's TRIG bit and its clear of TRIGGERED landed in the same write, and the write won. Found by the model's own unit test of the host trigger, before any RTL. A CTRL write with TRIG set now only triggers (watch/SPEC.md).
 
 Firmware (all found by running on the ISS against a peer model)
 - SPI master: two OUTs scheduled at the same T set LATE; fixed with `ADDT 3, now`.
@@ -179,3 +187,24 @@ Per-class margins (src/shruti_ear.v, Phase C), each bug planted alone. The rando
 | gap > margin instead of gap >= margin | per-class margins at the windows' gaps |
 | EAR_MARGIN sets only class 0 | margin registers |
 | EAR_MARGIN_K writes the wrong class | margin registers |
+
+Watch (src/shruti_watch.v, Phase C), each bug planted alone against the Watch tests. The random co-simulation missed five (marked *): its random guards rarely pass, so matches are few and edge counts on a pin come out even, and its trigger-in and class sources never sit at a steady level before arming. `watch_rules_by_hand` and the re-arm with a steady class in `watch_triggers_on_the_ear` were written to catch them.
+
+| Planted bug | Caught by |
+| --- | --- |
+| Guard compared against the previous levels | random co-simulation |
+| Interval lower bound exclusive | random co-simulation |
+| Interval not restarted by a CFG write * | rules by hand (the fall after a CFG write) |
+| Rise and fall swapped * | rules by hand (11 falls, 10 rises) |
+| PINS ignored | random co-simulation |
+| Freezes one entry early | all three |
+| The trigger cycle's entry counted in POST | all three |
+| Trigger-in on its level, not its rising edge * | rules by hand (held high before arming) |
+| Class source on any nonzero class * | Ear sources (re-armed with the class steady) |
+| Recorder read newest first | all three |
+| COUNT stops at 15 | random co-simulation, Ear sources |
+| Disarm leaves FROZEN set | host trigger and re-arm |
+| Monitor 1 sets monitor 0's SYNC flag | random co-simulation |
+| Hit counter wraps * | rules by hand (300 matches) |
+| Triggers again after the first trigger | random co-simulation |
+

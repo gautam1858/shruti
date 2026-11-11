@@ -41,6 +41,7 @@ class Chip:
         self.k = 0
         self.ext = 0xFF             # B pins: external level (pulled up)
         self.m = 0xF                # M0-M3
+        self.trig = 0               # trigger-in, ui_in[3]: stimulus pin 12
         self.sck, self.mosi, self.cs = 0, 0, 1
         self.stim = {}              # tick -> [(pin, level)]
         self.pads = {}              # tick -> 12-bit pad levels, while recording
@@ -52,7 +53,7 @@ class Chip:
 
     async def reset(self):
         self.rst_n = 0
-        self.ext, self.m = 0xFF, 0xF
+        self.ext, self.m, self.trig = 0xFF, 0xF, 0
         self.sck, self.mosi, self.cs = 0, 0, 1
         self.stim.clear()
         self.pads.clear()
@@ -72,19 +73,22 @@ class Chip:
         for pin, level in self.stim.pop(self.k, []):
             if pin < 8:
                 self.ext = (self.ext & ~(1 << pin)) | (level << pin)
+            elif pin == 12:
+                self.trig = level
             else:
                 self.m = (self.m & ~(1 << (pin - 8))) | (level << (pin - 8))
         self.dut.ena.value = 1
         self.dut.rst_n.value = self.rst_n
         self.dut.ext.value = self.ext
-        self.dut.ui_in.value = (self.m << 4) | (self.cs << 2) | (self.mosi << 1) | self.sck
+        self.dut.ui_in.value = ((self.m << 4) | (self.trig << 3) | (self.cs << 2)
+                                | (self.mosi << 1) | self.sck)
         await ReadOnly()
         uo = self.dut.uo_out.value
         uo = int(uo) if uo.is_resolvable else 0      # X before the first reset
         self.miso = uo & 1
         self.irq = (uo >> 1) & 1
         if self.recording:
-            self.pads[self.k] = int(self.dut.uio_in.value) | (self.m << 8)
+            self.pads[self.k] = int(self.dut.uio_in.value) | (self.m << 8) | (self.trig << 12)
             self.outs[self.k] = uo
         if self.probe is not None:
             self.probe()

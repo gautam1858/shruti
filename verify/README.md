@@ -3,14 +3,14 @@
 What exists today (8 Oct 2026):
 
 - `em.sby`: SymbiYosys setups for the Event Machine's properties, which sit in the `ifdef FORMAL` block at the end of `src/shruti_em.v`.
+- `ear.sby` and `ear_formal.v`: the classifier proof, the Ear's multiply-accumulate, requantisation, argmax and decision units against their specification for every input (below).
 - `mutate.py`: plants one bug at a time in a copy of the RTL and checks that the bounded run fails.
 - `signoff.py`: the CI gate on the post-route metrics (the `signoff` job in `.github/workflows/gds.yaml`).
 
-The `formal` workflow runs all three formal steps on every push.
+The `formal` workflow runs all the formal steps on every push.
 
 The constrained-random differential harness (RTL against the ISS) and the Ear's bit-exact tests are cocotb tests in `test/test.py`. Planned here:
-- formal properties for edge capture, and for the flight recorder once Watch is built;
-- the classifier proof (spec milestone 13 Dec 2026);
+- formal properties for edge capture and Watch's flight recorder (Watch's RTL is checked cycle by cycle against `watch/model.py` in cocotb);
 - a bounded equivalence check of the Event Machine against a Verilog transliteration of the ISS;
 - cocotb bus models with protocol-level mutations.
 
@@ -127,3 +127,33 @@ It warns when:
 - there are max-slew, max-cap or max-fanout violations.
 
 Its table goes to the job summary. `tests/test_signoff.py` runs it on the real metrics of the GDS run for commit fcafc0b, and on a doctored copy that must fail.
+
+## The classifier proof (`ear.sby`)
+
+`sby -f ear.sby` (under a minute with z3) proves the Ear's arithmetic and decision units, `shruti_ear_mac` and `shruti_ear_argmax` in `src/shruti_ear.v`, against the specification in `ear/SPEC.md`, written independently in `ear_formal.v`:
+
+| Task | Method | Property |
+| --- | --- | --- |
+| `layer1` | k-induction, depth 5 | For any threshold and shift and any sequence of 72 six-bit features and ternary weights, the 16-bit running sum equals the specification's B + sum(w_i f_i) in exact arithmetic after every term (L1, L3: no step overflows), stays within 128 + 63 n after n terms (L2), and requantises to min(255, max(0, sum) >> SHIFT) (L4) |
+| `layer2` | k-induction, depth 2 | For any 8 hidden values and ternary weights, the output equals sum(w_j h_j) after every term and stays within 255 n, so within +-2,040 (O1, O2) |
+| `argmax` | bounded, covers the whole run | For any 8 outputs within +-2,040 (O2) arriving in class order into registers that start anywhere: best is the maximum, its class the lowest class with that maximum, second the maximum over the other classes; confident is best - second >= MARGIN[class] and OOD is best < FLOOR or edges < MIN_EDGES, for any margins, floor and edge counts (A1-A5) |
+
+What it does not prove: the schedule, that is, which feature and which weight meet in which cycle across the 648-cycle pause, and the feature extractor. Those are checked bit-exact against `ear/features.py` and `ear/mlp.py` on every window and every feature read back in cocotb (`test/test.py`, the tests starting `ear_`). The spec's version of this proof (section 9, item 5) is a k-induction invariant over the MAC cycle counter for the whole datapath; this is the units it runs on, proved for all inputs.
+
+Planted bugs, each alone, each failing its task with a counterexample from the first cycle:
+
+| Planted bug | Fails |
+| --- | --- |
+| +1 and -1 swapped | layer1 (L1) |
+| Weight code 10 read as +1 | layer1 (L1) |
+| The input sign-extended | layer2 (O1) |
+| Requantised values clamp at 254 | layer1 (L4) |
+| Negative sums not zeroed | layer1 (L4) |
+| Ties go to the higher class | argmax (A2) |
+| Runner-up not updated on a new best | argmax (A3) |
+| Confident needs gap > margin | argmax (A4) |
+| FLOOR not sign-extended | argmax (A5) |
+| The margin of the last class, not the best | argmax (A4) |
+
+Clamp at 254 needs the base case to reach a sum of 255, three terms deep, which is why `layer1` runs at depth 5.
+
